@@ -1,0 +1,9 @@
+.DS_Store
+*.swp
+*~
+/_backup/
+/tmp/
+node_modules/
+.venv/
+__pycache__/
+.system/

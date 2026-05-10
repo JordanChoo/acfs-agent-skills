@@ -1,0 +1,4 @@
+interface:
+  display_name: "Schema Change Rollout"
+  short_description: "Plan safe expand-migrate-contract schema rollouts"
+  default_prompt: "Use $schema-change-rollout to plan this field or contract migration across code, storage, and tests."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Firebase Emulator E2E Harness"
+  short_description: "Build deterministic Firebase emulator test harnesses"
+  default_prompt: "Use $firebase-emulator-e2e-harness to make this Firebase emulator E2E setup deterministic and CI-safe."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Async State Machine Hardening"
+  short_description: "Harden retries, dedupe, races, and async state transitions"
+  default_prompt: "Use $async-state-machine-hardening to review this async workflow for idempotency, retry, and transition bugs."
