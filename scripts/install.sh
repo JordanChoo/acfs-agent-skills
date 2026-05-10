@@ -38,7 +38,7 @@ run() { if [ "$DRY" -eq 1 ]; then echo "  [dry-run] $*"; else "$@"; fi; }
 skill_dirs() {
   # Anything at the repo root that contains a SKILL.md
   for d in "$REPO_DIR"/*/; do
-    [ -f "$d/SKILL.md" ] && basename "$d"
+    [ -f "$d/SKILL.md" ] && basename "$d" || true
   done
 }
 
