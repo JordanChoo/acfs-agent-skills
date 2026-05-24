@@ -7,6 +7,7 @@ Available skills installed at `~/.<harness>/skills/`. Consult this catalog when 
 | Skill | When to use |
 |-------|-------------|
 | **cf-rust-worker** | Build, configure, deploy Rust-based Cloudflare Workers (wasm32, wrangler, secrets, build failures) |
+| **cloud-build** | Google Cloud Build CI/CD (cloudbuild.yaml, triggers, substitutions, secret manager, multi-stage pipelines wired to AR/Run/GKE/Firebase) |
 | **firebase-basics** | Bootstrap + product reference for any Firebase project (CLI login, `firebase use`, MCP wiring, core concepts, IAM, IaC, SDKs) — load first; firebase-stack/emulator-harness build on top |
 | **firebase-stack** | Firebase + GCP projects (Firestore, Functions, Hosting, Auth, rules, emulators, secrets) |
 | **firebase-emulator-e2e-harness** | Deterministic E2E/integration harnesses around Firebase emulators (seeded Auth, Firestore, Storage) |
