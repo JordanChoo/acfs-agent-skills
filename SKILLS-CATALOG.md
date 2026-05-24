@@ -41,6 +41,7 @@ Available skills installed at `~/.<harness>/skills/`. Consult this catalog when 
 | Skill | When to use |
 |-------|-------------|
 | **astro-site** | Astro v5 static sites (Tailwind v4, MDX, content collections, sitemap, RSS, migrations) |
+| **directus** | Self-hosted Directus headless CMS, row-level multitenancy (`tenant_id` + filter rules), permissions/policies, SDK, custom extensions (hooks/endpoints/operations), schema snapshots |
 
 ## DevOps & CLI Tools
 
