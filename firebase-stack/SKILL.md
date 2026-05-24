@@ -13,6 +13,8 @@ description: >-
 
 Decision logic for working safely in Firebase + GCP repos. The goal is to prevent the recurring traps: deploying broken rules, deploying without indexes the queries need, leaking secrets, and skipping emulator validation.
 
+For Firebase bootstrap (CLI login, project selection, MCP wiring) and authoritative product references (core concepts, IAM, IaC, SDKs), see [`firebase-basics`](../firebase-basics/SKILL.md). For emulator E2E harness work, see [`firebase-emulator-e2e-harness`](../firebase-emulator-e2e-harness/SKILL.md).
+
 ## Triggers
 
 Load this skill when ANY of:
@@ -137,3 +139,10 @@ In order:
 6. `functions/package.json` and `functions/src/index.ts` — function surface and entrypoints
 
 Defer to the project's `CLAUDE.md` / `AGENTS.md` if they specify additional gates.
+
+---
+
+## See also
+
+- [`firebase-basics`](../firebase-basics/SKILL.md) — bootstrap (CLI login, `firebase use`, MCP server wiring) and authoritative Firebase product references mirrored from google/skills (core concepts, CLI, client/admin SDKs, IaC, IAM/security)
+- [`firebase-emulator-e2e-harness`](../firebase-emulator-e2e-harness/SKILL.md) — deterministic emulator-backed harnesses for Playwright/Vitest
