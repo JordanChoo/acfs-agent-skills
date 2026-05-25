@@ -21,6 +21,7 @@ for needle in \
   "mcp-agent-mail serve" \
   "am serve-http" \
   "http://127.0.0.1:8765/mcp/" \
+  "scripts/audit-drift.sh" \
   "AM_NEXT_STEPS.md"; do
   if grep -Fq "$needle" "$SKILL_MD"; then
     ok "documents: $needle"
