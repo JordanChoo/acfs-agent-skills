@@ -45,6 +45,9 @@ If you have pre-existing skills at the same names, `install.sh` refuses to overw
 ```bash
 cd ~/src/acfs-agent-skills
 
+# Check for cross-harness drift first.
+bash scripts/audit-drift.sh
+
 # Edit a skill in place — both harnesses see changes immediately.
 $EDITOR cass/SKILL.md
 
@@ -53,6 +56,9 @@ bash scripts/test-all.sh --skill cass
 
 # Or run the whole suite.
 bash scripts/test-all.sh
+
+# Reconcile symlinks into both harnesses.
+bash scripts/install.sh
 
 # Commit & push.
 git add cass
@@ -90,6 +96,9 @@ scripts/install.sh --force          # back up + replace real dirs at target
 scripts/install.sh --dry-run
 scripts/install.sh --uninstall      # remove only the symlinks we own
 
+scripts/audit-drift.sh              # report non-symlinks, missing links, target mismatches
+scripts/audit-drift.sh --json
+
 scripts/test-all.sh                 # run every self-test
 scripts/test-all.sh --skill cass    # one skill
 scripts/test-all.sh --quiet
@@ -102,6 +111,7 @@ scripts/test-all.sh --json          # CI-friendly
 cd ~/src/acfs-agent-skills
 mkdir -p new-skill/{references,scripts}
 $EDITOR new-skill/SKILL.md          # write frontmatter + body
+bash scripts/audit-drift.sh         # drift should be clean before install
 bash scripts/install.sh             # idempotent — links the new skill
 git add new-skill
 git commit -m "add new-skill"
