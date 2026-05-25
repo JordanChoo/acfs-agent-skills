@@ -2,72 +2,313 @@
 name: directus
 description: >-
   Discipline for self-hosted Directus headless CMS projects with row-level
-  multitenancy and custom extensions. Use when the repo has docker-compose
-  with `directus/directus`, an `extensions/` folder, `@directus/sdk` or
-  `@directus/extensions-sdk` in deps, a `snapshot.yaml` / schema migration
-  file, or the user mentions Directus, collections, flows, hooks/endpoints/
-  operations, filter rules, permissions, policies, or schema snapshots.
-  Encodes the row-level tenant pattern, permission filter syntax, SDK
-  composables, extension scaffolding, schema-promotion workflow, and the
-  recurring traps (cache invalidation, system-collection writes, public role).
+  multitenancy, custom extensions, and Directus-backed frontend builds. Use
+  when the repo has docker-compose with `directus/directus`, an `extensions/`
+  folder, `@directus/sdk` or `@directus/extensions-sdk` in deps, a
+  `snapshot.yaml` / schema migration file, or the user mentions Directus,
+  collections, flows, hooks/endpoints/operations, filter rules, permissions,
+  policies, schema snapshots, `PUBLIC_URL`, or `CORS_ORIGIN`. Encodes the
+  row-level tenant pattern, frontend offline/cache fallback, self-hosted env
+  triage, extension discipline, schema-promotion workflow, and recurring traps
+  seen in real sessions.
 ---
 
 # directus
 
-Decision logic for self-hosted Directus projects in this environment. Default tenancy model: **row-level (single instance, `tenant_id` FK + filter rules)**. Default deploy: **Docker / docker-compose**. Extensions are first-class.
+Directus work in this environment usually falls into one of three buckets:
+
+1. **Frontend consuming Directus at build time**: Astro/Next/static site pulls content from Directus.
+2. **Self-hosted Directus instance**: Docker, domains, env vars, storage, backups, health checks.
+3. **Directus internals**: permissions, multitenancy, flows, hooks, endpoints, schema snapshots.
+
+Start by classifying which bucket you are in. Do **not** jump straight into app code or env-var edits.
 
 ## Triggers
 
 Load this skill when ANY of:
-- Files: `docker-compose*.y*ml` referencing `directus/directus`, `snapshot.yaml`, `extensions/`, `directus.config.{js,ts}`, `package.json` with `@directus/sdk` or `@directus/extensions-sdk`
-- User mentions: Directus, collection, item, field, flow, hook, endpoint, operation, policy, role, filter rule, permission, snapshot, M2A/M2M/M2O, `directus_users`, `directus_files`
 
-## Canonical stack signature
+- Files: `docker-compose*.y*ml` referencing `directus/directus`, `snapshot.yaml`, `extensions/`, `directus.config.{js,ts}`, `infra/directus/`, `.env.example` with `DIRECTUS_*` or `PUBLIC_URL`, `package.json` with `@directus/sdk` or `@directus/extensions-sdk`
+- User mentions: Directus, collection, item, field, flow, hook, endpoint, operation, policy, role, filter rule, permission, snapshot, `directus_users`, `directus_files`, `PUBLIC_URL`, `CORS_ORIGIN`, `server/health`
 
+## First 5 Minutes
+
+Read these in order before changing anything:
+
+1. Runtime entrypoint: `docker-compose.yml`, k8s manifests, or `infra/directus/`
+2. Env contract: `.env.example`, deployment docs, secrets template
+3. Schema source of truth: `snapshot.yaml`, `snapshots/`, or migrations
+4. Frontend consumer: `src/lib/directus.*`, `src/env.d.ts`, build/tests that call Directus
+5. Extensions and ops scripts: `extensions/`, `healthcheck.sh`, backup/restore scripts
+
+Then decide the working mode explicitly:
+
+- **Live CMS mode**: Directus is reachable and you will verify against it.
+- **Offline cached mode**: build/test against previously cached Directus responses.
+- **Offline seeded mode**: build/test against committed seed fixtures or migration output because Directus is down.
+
+If you do not decide the mode up front, agents repeatedly waste time chasing the wrong failure.
+
+## Core Mental Model
+
+Directus mirrors your database. There are two separate surfaces:
+
+- **Database schema**: tables, columns, FKs, indexes
+- **Directus metadata**: `directus_collections`, `directus_fields`, `directus_relations`, `directus_permissions`, interfaces, presets, validations
+
+Raw SQL migrations only cover the first. Schema snapshots cover **both**. This is the root cause of many "works locally, staging is wrong" bugs.
+
+System collections you will touch most often:
+
+- `directus_users`
+- `directus_roles`
+- `directus_policies`
+- `directus_permissions`
+- `directus_files`
+- `directus_folders`
+- `directus_flows`
+- `directus_operations`
+
+Query them via system endpoints like `/users` or `/files`, not `/items/directus_users`.
+
+## Happy Path A: Frontend Consuming Directus
+
+This is the most common failure cluster from session history. Treat it as a first-class integration, not "just another fetch."
+
+### 1. Lock the env contract first
+
+For build-time frontends:
+
+- `DIRECTUS_URL` is **server-side only**
+- Browser-visible vars use `PUBLIC_*`
+- Commit `.env.example`
+- Add `src/env.d.ts` so `import.meta.env.DIRECTUS_URL` is typed
+
+Guardrail:
+
+- Do **not** rename `DIRECTUS_URL` to `PUBLIC_DIRECTUS_URL` unless the browser truly needs to hit the CMS directly.
+- Do **not** debug browser CORS for an Astro build-time fetch. CORS matters for browser/runtime/admin traffic, not server-side build fetches.
+
+### 2. Use an explicit offline strategy
+
+For Directus-backed static builds, the official fallback order is:
+
+1. Live Directus
+2. Cached API payloads
+3. Committed migration-seeded fixtures
+4. `null` for single-item lookups that genuinely have no fallback
+
+Make this behavior intentional in code:
+
+- List/archive helpers should usually return cached or seeded data instead of throwing.
+- Single-item helpers can return `null` when there is no cached/seeded equivalent.
+- Log the tier that was used so build/test failures are explainable.
+
+This is not a hack. In repeated sessions, agents only got deterministic builds after promoting seeded offline data to an official path.
+
+### 3. Do not run ambiguous builds
+
+Allowed modes:
+
+```bash
+# Live CMS mode
+DIRECTUS_URL=https://cms.example.com pnpm build
+
+# Offline cached/seeded mode
+DIRECTUS_URL="" pnpm build
 ```
-directus/directus:latest                       # pinned in prod (e.g. :11.x)
-postgres:16                                    # mysql/mariadb supported but pg is default
-@directus/sdk: ^19.x                           # composable client
-@directus/extensions-sdk: ^13.x                # only if writing extensions
-Node.js 22, pnpm >=10 <11                      # if building extensions
+
+Forbidden mode:
+
+- Running a build/review with Directus down, an empty cache, and no seeded fixtures, then treating the output as authoritative
+
+Guardrail:
+
+- Never regenerate signoff snapshots or release artifacts from an empty-cache build unless the offline seeded path is intentional and documented.
+
+### 4. Isolate cache in tests
+
+Repeated failure pattern: one test or build job clears `.cache` while another test is reading from it.
+
+Official rule:
+
+- Tests that exercise Directus fallback must use a per-process temp cache dir via `CACHE_DIR`
+- Build-verification tests must not share mutable cache state with unit tests
+
+Example pattern:
+
+```ts
+vi.stubEnv('CACHE_DIR', join(tmpdir(), `directus-cache-${process.pid}`));
 ```
 
-Confirm `DB_CLIENT`, `STORAGE_LOCATIONS`, and `SECRET` in the env before touching anything that talks to Directus. Missing `SECRET` rotates session tokens on every restart.
+If tests and build verification both touch `.cache`, assume you need isolation.
 
-## Core mental model
+### 5. Prefer typed SDK usage
 
-Directus **mirrors** your database. It does not own the schema — every Directus "collection" is a Postgres/MySQL table, every "field" is a column. Two parallel concerns:
-- **Database schema**: tables, columns, FKs, indexes — managed via Directus admin OR raw SQL/migrations. Both stay in sync because Directus introspects on boot.
-- **Directus metadata**: `directus_collections`, `directus_fields`, `directus_relations`, `directus_permissions`, etc. — system tables that describe interfaces, display modes, validation, presets. Only Directus knows about these.
+```ts
+import {
+  createDirectus,
+  rest,
+  readItems,
+  readItem,
+} from '@directus/sdk';
 
-Schema snapshots (`directus schema snapshot` → `directus schema apply`) capture **both**. Raw SQL migrations capture only the first. This is the #1 source of "it works on my laptop" bugs.
+interface Schema {
+  blog_articles: BlogArticle[];
+  case_studies: CaseStudy[];
+}
 
-### System collections you'll touch
-`directus_users`, `directus_roles`, `directus_policies`, `directus_permissions`, `directus_files`, `directus_folders`, `directus_flows`, `directus_operations`, `directus_revisions`, `directus_activity`. All queryable via `/users`, `/files`, etc. — not `/items/directus_users`.
+const directus = createDirectus<Schema>(process.env.DIRECTUS_URL!).with(rest());
 
----
+const posts = await directus.request(
+  readItems('blog_articles', {
+    filter: { status: { _eq: 'published' } },
+    sort: ['-date_published'],
+    fields: ['id', 'title', 'slug'],
+  }),
+);
+```
 
-## Multitenancy: row-level pattern (default)
+Guardrails:
 
-Single Directus instance, every tenant-scoped collection has a `tenant_id` M2O to a `tenants` collection. Isolation is enforced by **permission filter rules** that reference `$CURRENT_USER.tenant_id`, not by application code.
+- `fields: ['*']` returns scalars only
+- For relations, use explicit nested fields or `*.*`
+- Avoid `*.*.*` in production
+- Wrap Directus fetches with timeout/error handling so "Directus down during build" does not become a cryptic crash
 
-### Required schema shape
+### 6. Make rebuild hooks explicit
+
+For static sites, create a Directus Flow that triggers your deploy hook when content changes:
+
+- Trigger: create/update/delete on relevant collections
+- Action: webhook to Pages/Hosting deploy hook
+
+Do not rely on "someone remembers to redeploy after editing content."
+
+## Happy Path B: Self-Hosted Directus
+
+Default stack signature here:
+
+```text
+directus/directus:11.x
+postgres:16
+Node.js 22 if building extensions
+pnpm >=10 <11 for extension work
+```
+
+Confirm these env vars before touching anything operational:
+
+- `SECRET`
+- `KEY`
+- `PUBLIC_URL`
+- `DB_CLIENT`
+- DB connection vars
+- `STORAGE_LOCATIONS`
+
+Missing or rotating `SECRET`/`KEY` causes auth instability and session churn.
+
+### Health checks are mandatory
+
+Minimum verification surface:
+
+```bash
+curl -fsS "$DIRECTUS_URL/server/health"
+curl -fsS "$DIRECTUS_URL/server/info"
+curl -fsS "$DIRECTUS_URL/items/<public_collection>?limit=1&fields=id"
+```
+
+If you write a shell healthcheck under `set -e`, avoid `((FAILURES++))` in failure paths. Use:
+
+```bash
+FAILURES=$((FAILURES + 1))
+```
+
+That exact bug caused false script exits in real Directus ops sessions.
+
+### Custom domain and admin triage
+
+When the Directus admin shell loads but hydrates badly, or browser requests fail with `AxiosError: Network Error`, check this first:
+
+1. Compare the browser address bar host to the failing request URL
+2. If they differ, suspect `PUBLIC_URL`
+3. Inspect `CORS_ORIGIN`
+
+Rules:
+
+- `PUBLIC_URL` must match the hostname users actually visit
+- `CORS_ORIGIN` may need a comma-separated allowlist
+- Hard-refresh or use a private window after env changes
+
+Typical fix:
+
+```env
+PUBLIC_URL=https://cms.example.com
+CORS_ENABLED=true
+CORS_ORIGIN=https://app.example.com,https://cms.example.com
+```
+
+Rollback tactic when env changes broke the admin:
+
+- Remove `PUBLIC_URL` entirely and let Directus derive it from the request host
+- Remove or simplify `CORS_ORIGIN`
+- Restart and retest
+
+This rollback path repeatedly unblocked broken self-hosted admin sessions and should be considered official, not improvised.
+
+### Storage and backups
+
+- Local `./uploads` is fine for dev, not for multi-instance prod
+- Use S3/R2/GCS for anything past a single container
+- Back up the database **and** object storage
+
+Guardrail:
+
+- A non-empty `.sql.gz` file is **not** proof of a valid backup
+- Validate compressed dumps with `gunzip -t`
+- Inspect the header for a Postgres dump signature
+- Resolve the target postgres container explicitly; do not rely on loose `name=postgres` substring matches in shared Docker hosts
+
+## Happy Path C: Schema Promotion
+
+Promote schema with snapshots, not raw SQL alone:
+
+```bash
+# source env
+docker compose exec directus npx directus schema snapshot ./snapshot.yaml --yes
+
+# target env
+docker compose exec directus npx directus schema apply ./snapshot.yaml --yes
+```
+
+After `schema apply`, clear schema cache:
+
+- `docker compose restart directus`, or
+- `POST /utils/cache/clear` with an admin token
+
+This cache invalidation step was repeatedly skipped in real sessions. Treat it as mandatory.
+
+Fresh environment order:
+
+1. `directus bootstrap`
+2. custom DB migrations
+3. `directus schema apply ./snapshot.yaml`
+4. restart / clear cache
+
+Never modify `directus_*` system tables from raw SQL migrations.
+
+## Multitenancy: Row-Level Pattern
+
+Default tenancy model in this environment is single-instance row-level tenancy.
+
+Required shape:
 
 ```sql
--- tenants is the root
 tenants(id, name, slug, ...)
-
--- every tenant-scoped collection
-posts(id, tenant_id, title, ...)  -- tenant_id NOT NULL, FK to tenants.id
+posts(id, tenant_id, ...)
 projects(id, tenant_id, ...)
-
--- users belong to a tenant via a custom column on directus_users
 ALTER TABLE directus_users ADD COLUMN tenant_id uuid REFERENCES tenants(id);
 ```
 
-In Directus: add a `tenant_id` field to `directus_users` (Settings → Data Model → Directus Users → Create Field → M2O to `tenants`). This makes `$CURRENT_USER.tenant_id` resolvable in filter rules.
-
-### Permission filter (apply to every tenant-scoped collection, every action)
+Permission filter on every tenant-scoped collection:
 
 ```json
 {
@@ -75,133 +316,58 @@ In Directus: add a `tenant_id` field to `directus_users` (Settings → Data Mode
 }
 ```
 
-For **create** actions, add a preset (not a filter) that stamps `tenant_id` automatically so users can't forge it:
+Create preset:
 
 ```json
-// Preset on the create permission
 { "tenant_id": "$CURRENT_USER.tenant_id" }
 ```
 
-Combine with `fields` whitelist that **excludes** `tenant_id` from updatable fields — otherwise an authenticated user can move records between tenants by PATCH.
+Guardrails:
 
-### Tenant-admin role
+- Exclude `tenant_id` from user-updatable fields
+- Never give tenant admins `admin_access: true`
+- Never leave a tenant-scoped collection without `tenant_id`
+- Audit the Public role on every project
 
-A "tenant admin" role gets full CRUD scoped by the same filter — **never** `admin_access: true`, which bypasses all permissions. Reserve `admin_access` for platform operators.
+Dynamic variables you will actually use:
 
-### Red flags for row-level tenancy
-- A collection without `tenant_id` that holds tenant data → cross-tenant leak waiting to happen
-- A permission without the tenant filter → same
-- Filter rule using `$CURRENT_USER` (the id) instead of `$CURRENT_USER.tenant_id` (the FK) → only scopes by user, not tenant
-- A flow operation that writes items with `accountability: null` → bypasses permissions; must set tenant_id explicitly
-- Custom endpoints using `ItemsService` with `{ schema, accountability: null }` → same; pass real accountability or stamp tenant_id by hand
+- `$CURRENT_USER`
+- `$CURRENT_USER.tenant_id`
+- `$CURRENT_ROLE`
+- `$CURRENT_ROLES`
+- `$CURRENT_POLICIES`
+- `$NOW`
 
----
+## Extensions, Hooks, Endpoints, Flows
 
-## Permissions, roles, policies
-
-Directus 11+ separates the three:
-- **Role** — a label assigned to users (e.g., "Editor"). Roles can be nested.
-- **Policy** — a bag of permissions. Attached to a role OR directly to a user.
-- **Permission** — one row per `(policy, collection, action)` with `permissions` filter, `fields` whitelist, `validation`, `presets`.
-
-Actions: `create`, `read`, `update`, `delete`, `share`. The "comment" action is on a per-collection basis as of v11.
-
-### Filter rule syntax (used in permissions, flows, SDK queries)
-
-```json
-{
-  "_and": [
-    { "status": { "_eq": "published" } },
-    { "tenant_id": { "_eq": "$CURRENT_USER.tenant_id" } },
-    { "_or": [
-      { "author": { "_eq": "$CURRENT_USER" } },
-      { "visibility": { "_in": ["public", "team"] } }
-    ]}
-  ]
-}
-```
-
-Operators: `_eq _neq _lt _lte _gt _gte _in _nin _null _nnull _contains _ncontains _starts_with _ends_with _between _nbetween _empty _nempty _intersects _ncontains _regex`.
-
-Dynamic variables: `$CURRENT_USER` (id, or `.field` to dereference), `$CURRENT_ROLE`, `$CURRENT_ROLES` (array, includes nested), `$CURRENT_POLICIES` (array), `$NOW`, `$NOW(-7 days)` / `$NOW(+1 hour)`.
-
-The **Public** role/policy is the unauthenticated default. Review it on every project — accidentally granting `read` to a collection here exposes data to the open internet.
-
----
-
-## SDK usage (`@directus/sdk`)
-
-Composable client — start empty, add the features you need:
-
-```ts
-import { createDirectus, rest, authentication, staticToken, readItems, createItem } from '@directus/sdk';
-
-// Frontend / user session
-const client = createDirectus<Schema>(import.meta.env.DIRECTUS_URL)
-  .with(authentication('cookie', { credentials: 'include' }))
-  .with(rest());
-
-// Server-to-server with a static token (machine user)
-const server = createDirectus<Schema>(process.env.DIRECTUS_URL!)
-  .with(staticToken(process.env.DIRECTUS_TOKEN!))
-  .with(rest());
-
-const posts = await client.request(readItems('posts', {
-  filter: { status: { _eq: 'published' } },
-  fields: ['id', 'title', 'slug', { author: ['first_name', 'avatar'] }],
-  sort: ['-published_at'],
-  limit: 10,
-}));
-```
-
-### Type-safety
-Define `Schema` as `{ posts: Post[]; tenants: Tenant[]; ... }`. Generate it with `directus-sdk-typegen` or hand-write it — without it every `readItems` returns `unknown[]`.
-
-### Field selection gotcha
-`fields: ['*']` returns scalars only. For relations, use `*.*` (one level) or explicit nested arrays. Don't use `*.*.*` in production — N+1 expansion is unbounded.
-
-### REST equivalents (when SDK isn't an option)
-```
-GET    /items/{collection}?filter[status][_eq]=published&fields=*,author.name&sort=-published_at&limit=10
-POST   /items/{collection}                     # single or array body
-PATCH  /items/{collection}/{id}
-DELETE /items/{collection}/{id}
-GET    /items/{collection}/singleton           # for singleton collections
-```
-
-GraphQL is at `POST /graphql` (items) and `POST /graphql/system` (system collections). Same auth header.
-
----
-
-## Extensions
-
-Three API extension types, four+ app extension types. Scaffold with the SDK CLI:
+Scaffold extensions with:
 
 ```bash
 npx create-directus-extension@latest
-# pick type: hook | endpoint | operation | interface | display | layout | module | panel | theme | bundle
 ```
 
-### Hooks (lifecycle)
-```ts
-import { defineHook } from '@directus/extensions-sdk';
+Use the right surface:
 
-export default defineHook(({ filter, action }) => {
-  // filter = blocking, can mutate payload; action = fire-and-forget
-  filter('items.create', async (payload, { collection, accountability }, { services, database }) => {
-    if (collection === 'posts' && accountability?.user) {
-      const usersService = new services.UsersService({ schema: await getSchema(), database });
-      const user = await usersService.readOne(accountability.user, { fields: ['tenant_id'] });
-      payload.tenant_id ??= user.tenant_id;  // server-side tenant stamp, defence-in-depth
-    }
-    return payload;
-  });
-});
-```
+- **Flow**: visual automation, cross-system glue, webhooks, schedules
+- **Hook**: block or mutate writes in-process
+- **Endpoint**: bespoke REST shape or server-side RPC
+- **Operation**: reusable Flow step
 
-Hook events: `(server|app).start`, `auth.*`, `(items|files|users|roles|...).{create,update,delete}` with `before` (filter) and `after` (action) variants. Use `filter` to mutate/block, `action` for side effects (webhooks, logs).
+### The accountability rule
 
-### Endpoints (custom REST routes)
+This is the main Directus extension footgun:
+
+- `accountability: null` runs as root
+- It bypasses normal permissions and tenant filters
+
+Rules:
+
+- Endpoints should pass `req.accountability`
+- User-triggered hooks/operations must preserve real accountability when possible
+- If a root-level operation is unavoidable, stamp `tenant_id` explicitly and document why
+
+Example endpoint pattern:
+
 ```ts
 import { defineEndpoint } from '@directus/extensions-sdk';
 
@@ -209,144 +375,59 @@ export default defineEndpoint((router, { services, getSchema }) => {
   router.get('/tenant-stats', async (req, res) => {
     if (!req.accountability?.user) return res.status(401).end();
     const schema = await getSchema();
-    const itemsService = new services.ItemsService('posts', { schema, accountability: req.accountability });
-    const count = await itemsService.readByQuery({ aggregate: { count: ['id'] } });
-    res.json(count);
+    const items = new services.ItemsService('posts', {
+      schema,
+      accountability: req.accountability,
+    });
+    const result = await items.readByQuery({ aggregate: { count: ['id'] } });
+    res.json(result);
   });
 });
 ```
-Mounted at `/<extension-name>/...`. Always pass `req.accountability` to services — `accountability: null` runs as root and skips all permission filters (including tenant isolation).
 
-### Operations (Flow steps)
-```ts
-import { defineOperationApi } from '@directus/extensions-sdk';
+## Verification Checklist
 
-export default defineOperationApi<{ tenant_id: string; subject: string }>({
-  id: 'send-tenant-email',
-  handler: async ({ tenant_id, subject }, { services, getSchema }) => {
-    // ...
-    return { sent: true };
-  },
-});
-```
-Pair with a `defineOperationApp` in `app.ts` for the visual editor card.
+Before you call the work done, verify the path you actually touched:
 
-### App extensions
-Interfaces (field editors), displays (read-only field renderers), layouts (collection views), modules (sidebar pages), panels (Insights tiles), themes. Vue 3 SFCs. Built with the same SDK CLI; output to `dist/` and loaded from the extensions folder.
+- Frontend:
+  - build passes in the intended live or offline mode
+  - fallback tier is explicit in logs
+  - tests do not share mutable Directus cache state
+  - no browser-only env vars were used for server-side fetches
+- Self-hosted CMS:
+  - `/server/health` and `/server/info` pass
+  - one representative collection query passes
+  - `PUBLIC_URL` and real hostname match
+  - hard refresh/private window after env changes
+- Schema changes:
+  - snapshot committed
+  - apply step documented
+  - restart or `/utils/cache/clear` performed
+- Multitenancy/extensions:
+  - no `accountability: null` leaks
+  - tenant filter/preset present
+  - Public role audited
 
-### Dev/build/deploy
+## Red Flags: Stop And Ask
 
-```bash
-pnpm dev      # watches src/, rebuilds dist/, hot-reload (API exts need server restart for hooks/endpoints)
-pnpm build    # production bundle to dist/
-pnpm validate # schema check + structure
-```
+- Build output or signoff was generated from Directus-down + empty-cache mode
+- Tests share one mutable `.cache` between build verification and Directus unit tests
+- `PUBLIC_URL` does not match the admin hostname in the browser
+- `CORS_ORIGIN` only includes the public app but the admin is cross-origin
+- New schema applied without restart/cache clear
+- Raw SQL touches `directus_*` tables
+- Root-level extension/service call (`accountability: null`) is being used for user-triggered work
+- Tenant-scoped collection has no `tenant_id`
+- Public role can read tenant or draft data
+- Backup scripts only check "file exists" and not dump integrity
 
-Deploy: mount the extension folder at `/directus/extensions/<name>/dist/` OR publish to npm with the `directus-extension` keyword and `pnpm add` inside the container. Set `EXTENSIONS_AUTO_RELOAD=true` only in dev — in prod it tanks startup time.
+## What To Read First In An Unfamiliar Directus Repo
 
-### Bundles
-Group related extensions (e.g., interface + display + hook for the same feature) into a single `bundle` extension. One install, one entry in `directus_extensions`.
+1. `docker-compose.yml` or infra manifests
+2. `.env.example`
+3. `snapshot.yaml` or migration folder
+4. `src/lib/directus.*` or equivalent CMS client
+5. `tests/*directus*` and build verification tests
+6. `extensions/`
+7. `healthcheck.sh`, backup scripts, restore docs
 
----
-
-## Flows
-
-No-code automation: trigger (event hook / webhook / schedule / manual / operation) → operations DAG. Operations include: condition, transform, run-script (JS sandbox), notification, webhook, item-create/read/update/delete, mail, log.
-
-### Tenant-safe flow rules
-- Flows run with the **trigger user's accountability** by default. Set `accountability: "all"` only if the flow legitimately needs cross-tenant access (rare).
-- `run-script` operations have a 10s timeout and no `require` — for anything bigger, write a custom operation extension.
-- Manual triggers attached to a collection respect that user's permissions for which items they can run it on.
-
-### When to use Flows vs hooks vs endpoints
-- **Flow** — non-developer editable, visual, schedulable, webhooks. Default for cross-system glue.
-- **Hook** — needs to block/mutate item writes, runs in-process, must be fast. Defence-in-depth for tenant stamping.
-- **Endpoint** — bespoke REST shape (aggregations, RPC-style), or needs to bypass the Items API.
-
----
-
-## Schema management & promotion
-
-**Always promote schema with snapshots, not raw SQL**, because snapshots round-trip Directus metadata (interfaces, presets, permissions).
-
-```bash
-# In source env (dev)
-docker compose exec directus npx directus schema snapshot ./snapshot.yaml --yes
-
-# Commit snapshot.yaml to git
-
-# In target env (staging/prod)
-docker compose exec directus npx directus schema apply ./snapshot.yaml --yes
-```
-
-### The cache invalidation trap
-`schema apply` does **not** always invalidate the schema cache. After apply, either:
-- `docker compose restart directus`, OR
-- `POST /utils/cache/clear` with admin token
-
-If the new fields/collections aren't appearing in API responses after apply, this is almost always why.
-
-### Custom SQL migrations
-Live in `<extensions>/migrations/<timestamp>-name.{js,ts}` with `up`/`down` exports. Run automatically on `directus bootstrap` and `directus start`. **Never** modify `directus_*` system tables in a migration — schema may not exist yet on first boot. Use a schema snapshot for that.
-
-### Order on a fresh environment
-1. `directus bootstrap` (creates system tables, runs system migrations, creates admin)
-2. `directus database migrate:latest` (runs your custom SQL migrations)
-3. `directus schema apply ./snapshot.yaml` (applies user collections + metadata)
-4. Restart container (cache flush)
-
----
-
-## Self-hosting essentials
-
-### Required env vars
-```
-KEY=<uuid>                    # used to sign tokens; rotate = log everyone out
-SECRET=<32+ char random>      # encrypts refresh tokens, flow secrets
-PUBLIC_URL=https://cms.example.com
-DB_CLIENT=pg
-DB_CONNECTION_STRING=postgres://...   # or DB_HOST/DB_PORT/DB_DATABASE/DB_USER/DB_PASSWORD
-ADMIN_EMAIL / ADMIN_PASSWORD          # only used on bootstrap of empty DB
-CACHE_ENABLED=true CACHE_STORE=redis CACHE_REDIS=redis://...   # prod
-STORAGE_LOCATIONS=s3
-STORAGE_S3_DRIVER=s3 STORAGE_S3_KEY=... STORAGE_S3_SECRET=... STORAGE_S3_BUCKET=... STORAGE_S3_REGION=...
-CORS_ENABLED=true CORS_ORIGIN=https://app.example.com
-EMAIL_TRANSPORT=smtp ...
-```
-
-### File storage
-Default is local disk (`./uploads`) — fine for dev, **not** for multi-instance or k8s. Switch to S3/R2/GCS via `STORAGE_LOCATIONS` for anything past a single container.
-
-### Health check
-`GET /server/health` — use as the Docker `HEALTHCHECK` and k8s liveness probe.
-
-### Backups
-The database is the source of truth — schema snapshots are **not** a backup of data. Back up Postgres + the storage bucket. Test restore quarterly.
-
----
-
-## Red flags — stop and ask
-
-- A new tenant-scoped collection without `tenant_id` field
-- A permission row without `tenant_id` filter (or using `$CURRENT_USER` instead of `$CURRENT_USER.tenant_id`)
-- Custom endpoint or flow operation using `accountability: null` for user-triggered actions — defeats tenant isolation
-- A role with `admin_access: true` assigned to anyone except platform operators
-- The Public role/policy granting read on anything tenant-scoped
-- Raw SQL migration touching `directus_*` tables — use a schema snapshot instead
-- `EXTENSIONS_AUTO_RELOAD=true` in production
-- Missing/rotating `SECRET` or `KEY` between deploys (logs everyone out, breaks flow secrets)
-- `fields=*.*.*` in API queries — unbounded N+1
-- Schema changes that work in dev but not staging — almost always the cache invalidation trap
-- Hook/operation extension that reads `directus_users` with `accountability: null` to "check the tenant" — use the request's accountability instead
-
----
-
-## What to read first in an unfamiliar Directus repo
-
-1. `docker-compose.yml` / k8s manifests — image tag, env vars, mounted volumes (`/directus/extensions`, `/directus/uploads`)
-2. `snapshot.yaml` (or `snapshots/`) — current canonical schema; grep for `tenant_id` to confirm tenancy model
-3. `extensions/` folder — list each extension's `package.json` to see types (`directus:extension.type`)
-4. `migrations/` folder — any SQL migrations applied on top of the snapshot
-5. `.env.example` — required env, especially `KEY`, `SECRET`, `STORAGE_*`, `CACHE_*`
-6. Frontend SDK usage — `grep -r '@directus/sdk' src/` to find every query; verify they pass auth and respect tenancy
-7. `CLAUDE.md` / `AGENTS.md` — project-specific overrides
