@@ -58,6 +58,12 @@ Available skills installed at `~/.<harness>/skills/`. Consult this catalog when 
 | **sbh** | Disk-pressure defense for AI coding workloads (disk full, cleanup, ballast, sbh daemon) |
 | **dsr** | Doodlestein Self-Releaser (local builds, cross-platform releases when GitHub Actions is throttled) |
 
+## Skill Development
+
+| Skill | When to use |
+|-------|-------------|
+| **skill-creator** | Create, evaluate, and iterate on Claude Code / Codex skills (SKILL.md authoring, benchmark evals, grading agents, packaging) |
+
 ## Migrations & Maintenance
 
 | Skill | When to use |
