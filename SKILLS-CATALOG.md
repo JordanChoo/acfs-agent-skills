@@ -6,7 +6,6 @@ Available skills installed at `~/.<harness>/skills/`. Consult this catalog when 
 
 | Skill | When to use |
 |-------|-------------|
-| **cf-rust-worker** | Build, configure, deploy Rust-based Cloudflare Workers (wasm32, wrangler, secrets, build failures) |
 | **cloud-build** | Google Cloud Build CI/CD (cloudbuild.yaml, triggers, substitutions, secret manager, multi-stage pipelines wired to AR/Run/GKE/Firebase) |
 | **firebase-basics** | Bootstrap + product reference for any Firebase project (CLI login, `firebase use`, MCP wiring, core concepts, IAM, IaC, SDKs) — load first; firebase-stack/emulator-harness build on top |
 | **firebase-stack** | Firebase + GCP projects (Firestore, Functions, Hosting, Auth, rules, emulators, secrets) |
@@ -14,21 +13,27 @@ Available skills installed at `~/.<harness>/skills/`. Consult this catalog when 
 | **schema-change-rollout** | Safe schema changes across storage, types, APIs, jobs, UI — migration-window compatibility |
 | **rch** | Offload cargo/gcc/bun builds to remote workers (slow compilation, hook routing, remote sync) |
 
-## AI Agent Frameworks
+## Cloudflare Platform & Agents
+
+Imported from [cloudflare/skills](https://github.com/cloudflare/skills) (Apache-2.0). Load **cloudflare** first when the product is not yet chosen; it routes to the others.
 
 | Skill | When to use |
 |-------|-------------|
-| **framework-selection** | START of any LangChain/LangGraph/Deep Agents project — determines which framework layer to use |
-| **langchain-fundamentals** | Create LangChain agents (create_agent, tools, middleware, error handling) |
-| **langchain-dependencies** | Package versions, installation, dependency management for LangChain/LangGraph/LangSmith/Deep Agents |
-| **langchain-middleware** | Human-in-the-loop approval, custom middleware hooks, structured output (Pydantic/Zod) |
-| **langchain-rag** | RAG systems (document loaders, text splitters, embeddings, vector stores — Chroma, FAISS, Pinecone) |
-| **langgraph-fundamentals** | Any LangGraph code (StateGraph, state schemas, nodes, edges, Command, Send, streaming) |
-| **langgraph-human-in-the-loop** | LangGraph human-in-the-loop patterns (interrupt, Command resume, approval workflows, error tiers) |
-| **langgraph-persistence** | LangGraph state persistence (checkpointers, thread_id, time travel, Store, subgraph scoping) |
-| **deep-agents-core** | Any Deep Agents app (create_deep_agent, harness architecture, SKILL.md format, config) |
-| **deep-agents-memory** | Deep Agents memory/persistence (StateBackend, StoreBackend, FilesystemMiddleware, CompositeBackend) |
-| **deep-agents-orchestration** | Deep Agents subagents, task planning, human approval (SubAgentMiddleware, TodoList, HITL) |
+| **cloudflare** | Product discovery + architecture for apps, APIs, AI agents, storage, networking, security — even when no Cloudflare product is named; bundles per-product references (D1, R2, KV, Queues, Vectorize, Workers AI, AI Gateway, Workflows, Containers, Browser Rendering, …) |
+| **agents-sdk** | Build/debug/review Cloudflare Agents SDK apps (`agents` package: state + scheduling, callable RPC, MCP servers, workflows, durable execution, HITL, streaming chat, email, voice, codemode, observability) |
+| **durable-objects** | Durable Objects for persistent state and coordination (RPC, SQLite storage, alarms, WebSockets; chat rooms, games, booking) |
+| **workers-best-practices** | Writing, reviewing, or configuring production Workers (runtime patterns, platform APIs, configuration) |
+| **wrangler** | Wrangler CLI: local dev, deploy, and managing Workers, KV, R2, D1, Vectorize, Queues, Workflows |
+| **cf-rust-worker** | Rust Cloudflare Workers compiled to wasm32 (worker crate, worker-build, wrangler.toml, secrets, CF dashboard build failures) |
+| **sandbox-next** | Cloudflare Sandbox apps on `@cloudflare/sandbox@next` (SDK 1.0 preview) — recommended for new projects |
+| **sandbox-stable** | Sandbox apps on the stable `@cloudflare/sandbox` package |
+| **sandbox-migrate-to-next** | Port a stable Sandbox app to `@cloudflare/sandbox@next` |
+| **nextjs-on-cloudflare** | Next.js on Workers with vinext (new project, migrating an existing app, vinext vs OpenNext) |
+| **cloudflare-email-service** | Email Sending / Email Routing integrations and delivery configuration |
+| **turnstile-spin** | Set up, repair, or migrate Turnstile bot verification incl. server-side Siteverify |
+| **web-perf** | Audit/optimize Core Web Vitals (FCP, LCP, TBT, CLS), render-blocking resources, network chains, Lighthouse |
+| **cloudflare-one** | Cloudflare One Zero Trust / SASE (Access, Gateway, WARP, Tunnel, Magic WAN, DLP, CASB, posture, identity) |
+| **cloudflare-one-migrations** | Migration assessment, policy mapping, parity gaps, rollout from Zscaler / Palo Alto / legacy VPN-SWG-SASE to Cloudflare One |
 
 ## Testing & Quality
 
