@@ -10,6 +10,10 @@
 #   bash scripts/install.sh --force        # backup + replace any real dirs at target
 #   bash scripts/install.sh --dry-run      # print what would happen, change nothing
 #   bash scripts/install.sh --uninstall    # remove only the symlinks we own (skip real dirs)
+#
+# Skills listed in scripts/tool-managed.txt (installer-owned, e.g. rch) are
+# never linked or unlinked, even with --force: their installers own the copies
+# under ~/.<harness>/skills and would clobber (or write through) a symlink.
 
 set -euo pipefail
 
@@ -35,6 +39,22 @@ done
 
 run() { if [ "$DRY" -eq 1 ]; then echo "  [dry-run] $*"; else "$@"; fi; }
 
+TOOL_MANAGED_FILE="$REPO_DIR/scripts/tool-managed.txt"
+
+tool_managed() {
+  # True when $1 is owned by its own installer (see scripts/tool-managed.txt).
+  # Pure bash on purpose: a `grep -q` pipeline under pipefail can report a
+  # SIGPIPE'd sed as failure even when the name matched.
+  local name="$1" line
+  [ -f "$TOOL_MANAGED_FILE" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="${line//[[:space:]]/}"
+    [ "$line" = "$name" ] && return 0
+  done < "$TOOL_MANAGED_FILE"
+  return 1
+}
+
 skill_dirs() {
   # Anything at the repo root that contains a SKILL.md
   for d in "$REPO_DIR"/*/; do
@@ -47,6 +67,11 @@ link_one() {
   local target="$HOME/.${harness}/skills/$name"
   local source_path="$REPO_DIR/$name"
   mkdir -p "$(dirname "$target")"
+
+  if tool_managed "$name"; then
+    echo "  ◦ $harness/$name (tool-managed; owned by its installer — skipped)"
+    return 0
+  fi
 
   if [ -L "$target" ]; then
     local current; current="$(readlink -f "$target" 2>/dev/null || readlink "$target")"
@@ -63,7 +88,7 @@ link_one() {
       echo "  ⚠ $harness/$name is a real dir; moving to $backup/$name"
       run mv "$target" "$backup/$name"
     else
-      echo "  ✗ $harness/$name is a real dir (not a symlink). Use --force to back it up and replace." >&2
+      echo "  ✗ $harness/$name is a real dir (not a symlink). Use --force to back it up and replace, or add it to scripts/tool-managed.txt if an installer owns it." >&2
       return 1
     fi
   fi
@@ -74,6 +99,10 @@ link_one() {
 unlink_one() {
   local harness="$1" name="$2"
   local target="$HOME/.${harness}/skills/$name"
+  if tool_managed "$name"; then
+    echo "  ◦ $harness/$name (tool-managed; leaving it alone)"
+    return 0
+  fi
   if [ -L "$target" ]; then
     run rm "$target"
     echo "  ✓ removed symlink $harness/$name"
@@ -104,11 +133,20 @@ main() {
   [ "$FORCE" -eq 1 ] && echo "Mode:     FORCE (will back up real dirs)"
   echo
 
+  local failed=0
   for h in "${HARNESSES[@]}"; do
-    while IFS= read -r name; do link_one "$h" "$name"; done <<<"$skills"
+    while IFS= read -r name; do
+      # One blocked skill must not abort the rest of the run.
+      link_one "$h" "$name" || failed=$((failed+1))
+    done <<<"$skills"
   done
 
   echo
+  if [ "$failed" -gt 0 ]; then
+    echo "Done, but $failed target(s) were NOT linked (real dirs). Rerun with --force to back them up, or list installer-owned ones in scripts/tool-managed.txt." >&2
+    echo "Verify with: bash scripts/audit-drift.sh"
+    exit 1
+  fi
   echo "Done. Verify with: ls -la ~/.claude/skills/ ~/.codex/skills/"
 }
 

@@ -14,7 +14,9 @@ Cross-harness skill library for Claude Code and Codex. One source of truth, two 
 │   └── …
 ├── scripts/
 │   ├── install.sh                      ← link skills into ~/.claude + ~/.codex
-│   └── test-all.sh                     ← run every skill's self-test
+│   ├── audit-drift.sh                  ← report harness drift from this repo
+│   ├── test-all.sh                     ← run every skill's self-test
+│   └── tool-managed.txt                ← skills owned by their own installers
 └── README.md
 ```
 
@@ -38,7 +40,17 @@ bash scripts/install.sh
 
 That's it. Both Claude Code and Codex now see every skill.
 
-If you have pre-existing skills at the same names, `install.sh` refuses to overwrite real (non-symlink) directories — pass `--force` to back them up to `~/.<harness>-skills-backup-<timestamp>/` and replace.
+If you have pre-existing skills at the same names, `install.sh` refuses to overwrite real (non-symlink) directories — pass `--force` to back them up to `~/.<harness>-skills-backup-<timestamp>/` and replace. One blocked skill does not abort the run: the rest still link, and the script exits non-zero so you notice.
+
+## Tool-managed skills
+
+Some skills are written into `~/.claude/skills` and `~/.codex/skills` by their own tool's installer — currently `rch`, `pfr`, and `pi-agent-rust`, all refreshed nightly by the ACFS update job. They must stay real directories there: a symlink would be replaced, or written through into this repo, on the installer's next run.
+
+`scripts/tool-managed.txt` lists them. `install.sh` never links or unlinks a listed skill (even with `--force`), and `audit-drift.sh` reports it as `◦ tool-managed` (counted as pass) instead of drift. The `rch/` directory in this repo is a reference snapshot of the installed skill, not the live copy; when the audit says the snapshot is behind, refresh it:
+
+```bash
+cp -R ~/.codex/skills/rch/. rch/ && git add rch && git commit -m "rch: refresh snapshot"
+```
 
 ## Daily workflow
 
@@ -96,7 +108,7 @@ scripts/install.sh --force          # back up + replace real dirs at target
 scripts/install.sh --dry-run
 scripts/install.sh --uninstall      # remove only the symlinks we own
 
-scripts/audit-drift.sh              # report non-symlinks, missing links, target mismatches
+scripts/audit-drift.sh              # report non-symlinks, missing links, target mismatches (◦ = tool-managed, ok)
 scripts/audit-drift.sh --json
 
 scripts/test-all.sh                 # run every self-test
@@ -122,8 +134,9 @@ git push
 
 ```bash
 cd ~/src/acfs-agent-skills
-bash scripts/install.sh --uninstall    # removes the symlinks first (safe)
+bash scripts/install.sh --uninstall    # removes ALL symlinks we own (safe; real dirs untouched)
 git rm -r <skill-name>
+bash scripts/install.sh                # relink the remaining skills
 git commit -m "remove <skill-name>"
 git push
 ```

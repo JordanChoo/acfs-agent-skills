@@ -7,6 +7,11 @@
 #   bash scripts/audit-drift.sh --claude-only
 #   bash scripts/audit-drift.sh --codex-only
 #   bash scripts/audit-drift.sh --json
+#
+# Skills listed in scripts/tool-managed.txt (installer-owned, e.g. rch) are
+# expected to be real directories; they report as "◦ tool-managed" and count
+# as pass. A tool-managed skill that is a SYMLINK is reported as drift, since
+# its installer will replace or write through it on the next run.
 
 set -uo pipefail
 
@@ -32,6 +37,33 @@ skill_dirs() {
   done | sort
 }
 
+TOOL_MANAGED_FILE="$REPO_DIR/scripts/tool-managed.txt"
+
+tool_managed() {
+  # True when $1 is owned by its own installer (see scripts/tool-managed.txt).
+  local name="$1" line
+  [ -f "$TOOL_MANAGED_FILE" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="${line//[[:space:]]/}"
+    [ "$line" = "$name" ] && return 0
+  done < "$TOOL_MANAGED_FILE"
+  return 1
+}
+
+snapshot_current() {
+  # 0 when every file in the live harness copy ($1) exists byte-identically
+  # in the canonical snapshot ($2). Files that exist only in canonical (e.g.
+  # a locally-authored helper script) are allowed, so this is deliberately
+  # not `diff -rq`.
+  local live="$1" canon="$2" f rel
+  while IFS= read -r -d '' f; do
+    rel="${f#"$live"/}"
+    [ -f "$canon/$rel" ] && cmp -s "$f" "$canon/$rel" || return 1
+  done < <(find "$live" -type f -print0)
+  return 0
+}
+
 json_escape() {
   local value="$1"
   value=${value//\\/\\\\}
@@ -46,11 +78,10 @@ declare -a ROWS
 
 record() {
   local harness="$1" skill="$2" status="$3" detail="$4"
-  if [ "$status" = "ok" ]; then
-    PASS=$((PASS+1))
-  else
-    FAIL=$((FAIL+1))
-  fi
+  case "$status" in
+    ok|tool-managed) PASS=$((PASS+1)) ;;
+    *) FAIL=$((FAIL+1)) ;;
+  esac
 
   if [ "$JSON" -eq 1 ]; then
     ROWS+=("$(printf '{"harness":"%s","skill":"%s","status":"%s","detail":"%s"}' \
@@ -60,8 +91,9 @@ record() {
       "$(json_escape "$detail")")")
   else
     case "$status" in
-      ok) printf '  ✓ %s/%s — %s\n' "$harness" "$skill" "$detail" ;;
-      *)  printf '  ✗ %s/%s — %s\n' "$harness" "$skill" "$detail" ;;
+      ok)           printf '  ✓ %s/%s — %s\n' "$harness" "$skill" "$detail" ;;
+      tool-managed) printf '  ◦ %s/%s — %s\n' "$harness" "$skill" "$detail" ;;
+      *)            printf '  ✗ %s/%s — %s\n' "$harness" "$skill" "$detail" ;;
     esac
   fi
 }
@@ -70,6 +102,19 @@ audit_skill() {
   local harness="$1" skill="$2"
   local target="$HOME/.${harness}/skills/$skill"
   local expected="$REPO_DIR/$skill"
+
+  if tool_managed "$skill"; then
+    if [ ! -e "$target" ]; then
+      record "$harness" "$skill" "tool-managed" "installer-owned; not installed on this machine"
+    elif [ -L "$target" ]; then
+      record "$harness" "$skill" "drift" "tool-managed skill is a symlink — its installer will replace or write through it; restore the real dir"
+    elif snapshot_current "$target" "$expected"; then
+      record "$harness" "$skill" "tool-managed" "installer-owned real dir; canonical snapshot is current"
+    else
+      record "$harness" "$skill" "tool-managed" "installer-owned real dir; canonical snapshot is behind (refresh: cp -R ~/.${harness}/skills/${skill}/. ${skill}/)"
+    fi
+    return
+  fi
 
   if [ ! -e "$target" ]; then
     record "$harness" "$skill" "drift" "missing target"
@@ -109,7 +154,11 @@ audit_extras() {
     [ -e "$p" ] || continue
     name="$(basename "$p")"
     if [ ! -f "$REPO_DIR/$name/SKILL.md" ]; then
-      record "$harness" "$name" "drift" "extra harness-local entry not present in canonical repo"
+      if tool_managed "$name"; then
+        record "$harness" "$name" "tool-managed" "installer-owned; not tracked in canonical repo (expected)"
+      else
+        record "$harness" "$name" "drift" "extra harness-local entry not present in canonical repo"
+      fi
     fi
   done
 }

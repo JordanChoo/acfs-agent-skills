@@ -1,0 +1,17 @@
+# Skills owned by their own installers, not by this repo.
+#
+# install.sh never links or unlinks a skill listed here (even with --force),
+# and audit-drift.sh reports it as "tool-managed" instead of drift.
+# One skill name per line; "#" starts a comment.
+#
+# rch, pfr and pi-agent-rust are (re)installed into ~/.claude/skills and
+# ~/.codex/skills as REAL directories by the ACFS nightly update
+# (acfs-nightly-update.timer -> each tool's verified installer, ~04:10).
+# A symlink placed there would be clobbered, or written through into this
+# repo, on the installer's next run.
+#
+# The rch/ directory in this repo is a reference snapshot of the installed
+# skill, synced by hand (cp -R ~/.codex/skills/rch/. rch/) - not the live copy.
+rch
+pfr
+pi-agent-rust
