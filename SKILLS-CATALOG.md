@@ -49,7 +49,7 @@ Available skills installed at `~/.<harness>/skills/`. Consult this catalog when 
 
 | Skill | When to use |
 |-------|-------------|
-| **agent-mail-ops** | Agent Mail incidents in ACFS (`AM is down`, disconnected MCP, `agent-mail.service`, rogue `mcp-agent-mail serve`, endpoint drift away from `127.0.0.1:8765`) |
+| **agent-mail-ops** | Agent Mail incidents in ACFS (`AM is down`, disconnected MCP, `health_check` red / corrupt SQLite, `agent-mail.service`, rogue `mcp-agent-mail serve`, endpoint drift away from `127.0.0.1:8765`, failed nightly `am` update, archive rebuild) |
 | **shared-skill-authoring** | Create or update shared Claude/Codex skills from `~/src/acfs-agent-skills`, run drift audits, and install via the canonical symlink workflow |
 | **ntm** | Multi-agent tmux sessions via `ntm` CLI (spawn, attach, broadcast, session management) |
 | **cass** | Search past Claude/Codex/Gemini sessions via `cass` CLI (recall prior work, search history) |
