@@ -13,6 +13,12 @@ Available skills installed at `~/.<harness>/skills/`. Consult this catalog when 
 | **schema-change-rollout** | Safe schema changes across storage, types, APIs, jobs, UI — migration-window compatibility |
 | **rch** | Offload cargo/gcc/bun builds to remote workers (slow compilation, hook routing, remote sync) |
 
+## Networking
+
+| Skill | When to use |
+|-------|-------------|
+| **tailscale** | Tailscale mesh-VPN / tailnet family — install & configure, exit nodes, subnet routers, ACL policy file, MagicDNS, SSH, **Taildrop** file transfer, Serve/Funnel, Docker/K8s operator, device management (MDM/SCIM/posture), session recording, Aperture (AI/LLM gateway), and `tsnet` Go apps |
+
 ## Cloudflare Platform & Agents
 
 Imported from [cloudflare/skills](https://github.com/cloudflare/skills) (Apache-2.0). Load **cloudflare** first when the product is not yet chosen; it routes to the others.
