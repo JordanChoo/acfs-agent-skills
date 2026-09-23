@@ -6,7 +6,8 @@ description: >-
   regression evals, online/production evals, agent/RAG evaluation, scores, prompt management or
   prompt optimization, `run_experiment`/`dataset.run_experiment`, `create_score`, dataset runs,
   Evaluation Rules, or gating CI on eval regressions — in Python or TypeScript. Encodes the
-  agreed approach: Langfuse is the control plane; connect via the API/SDK (not MCP); configure
+  agreed approach: Langfuse is the control plane; run the pipeline over the API/SDK (the official
+  project MCP is an optional read/write interactive surface); configure
   prompts/datasets/evaluators/experiments IN Langfuse for UI<->code parity; keep it evergreen.
   Reference implementation: github.com/JordanChoo/csv-langfuse (see its AGENTS.md).
 ---
@@ -21,7 +22,7 @@ Langfuse is a **database + UI + two server-side workers**. Your code is a **clie
 
 - **Langfuse executes:** managed **LLM-as-a-judge** evaluators + **online eval rules** + dashboards.
 - **Your code executes:** the experiment **task** (your prompt/app on each item) + **code-only evaluators** (deterministic, library, agent-structural). Their scores still persist into Langfuse.
-- **You (agent) are the author/operator:** write + run that code, read results back, iterate. Connect via the **API/SDK, never MCP** (MCP is optional prompt-pull + read-only inspection only).
+- **You (agent) are the author/operator:** write + run that code, read results back, iterate. The **pipeline** (OTel tracing, `run_experiment`, CI) runs on the **API/SDK**. Langfuse **also** ships an official **project MCP** (`<LANGFUSE_HOST>/api/public/mcp`, `streamableHttp`, `Basic base64(pk:sk)`, ~120 **read/write** tools: prompts, traces, datasets, scores, evaluators, rules, metrics, dashboards) — an optional interactive surface; restrict to reads via a client allowlist. It doesn't ingest OTel traces or run experiment loops — keep those on the SDK.
 
 ## Locked defaults
 
@@ -79,10 +80,10 @@ lf.flush()                                       # REQUIRED in short-lived/CI pr
 
 ## Do / Don't
 - **Do:** put prompts/datasets/evaluators/experiments in Langfuse; reach them via API/SDK; keep UI↔code parity; write code-only evaluators that score into the same runs; export config to git; CI-gate PRs.
-- **Don't:** push traces/scores/experiments over MCP; rely on UI-only config with no git export; use v2 SDK APIs (`langfuse_context`, `Langfuse().trace()`); forget `flush()`/`shutdown()`; hardcode keys/host/thresholds; build a parallel eval store.
+- **Don't:** route the pipeline (OTel trace ingestion, experiment task loops, CI gates) through MCP — those stay on the SDK; rely on UI-only config with no git export; use v2 SDK APIs (`langfuse_context`, `Langfuse().trace()`); forget `flush()`/`shutdown()`; hardcode keys/host/thresholds; build a parallel eval store.
 
 ## Gotchas
-- v4 + OTel APIs (`get_client`, `@observe`, `start_as_current_*`); v2 is legacy. Anthropic/Claude = OTel instrumentation (no drop-in). `LANGFUSE_HOST`↔`LANGFUSE_BASE_URL` renamed in v4 (both work). Real-time ingestion needs `x-langfuse-ingestion-version: 4`. Promptfoo only pulls prompts (no score push-back). EE-only: project RBAC, audit logs, SCIM, retention, masking.
+- v4 + OTel APIs (`get_client`, `@observe`, `start_as_current_*`); v2 is legacy. Anthropic/Claude = OTel instrumentation (no drop-in). `LANGFUSE_HOST`↔`LANGFUSE_BASE_URL` renamed in v4 (both work). Real-time ingestion needs `x-langfuse-ingestion-version: 4`. Promptfoo only pulls prompts (no score push-back). EE-only: project RBAC, audit logs, SCIM, retention, masking. Official **project MCP** = `<host>/api/public/mcp` (read/write, `Basic base64(pk:sk)`; full tool list at `mcp.reference.langfuse.com`); community `avivsinai/langfuse-mcp` now largely superseded.
 
 ## Reference implementation
 `github.com/JordanChoo/csv-langfuse` — full scaffold (infra compose, `lf_client` py+ts, evaluators, dataset sync/export, `run_experiment` CI gate, GitHub Action) and its `AGENTS.md`. Mirror that structure for new eval projects.
