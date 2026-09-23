@@ -25,7 +25,7 @@ Langfuse is a **database + UI + two server-side workers**. Your code is a **clie
 
 ## Locked defaults
 
-1. **Self-hosted Langfuse v4** (Web+Worker + Postgres + ClickHouse + Redis/Valkey + S3). Docker-Compose for local/CI; Helm chart v2 for prod.
+1. **Self-hosted Langfuse v4** — treat it as a **remote endpoint** (set `LANGFUSE_HOST`). Hosting is typically a **managed provider (e.g. Elestio)** or K8s/Helm; local Docker-Compose only for a throwaway dev instance. On a managed host there is **no infra to run**.
 2. **Both SDKs** — Python primary (`langfuse>=4,<5`), TypeScript secondary (`@langfuse/*` v5). Everything is OpenTelemetry.
 3. **Configure prompts, datasets, evaluators, experiments IN Langfuse** so UI and code edit the same objects (parity via the Evaluators / Evaluation Rules API, Prompt CMS, Datasets API).
 4. **Managed evaluators = LLM-as-judge only.** Deterministic / library (Ragas, DeepEval) / agent-structural checks run in code and write scores into the **same** runs.
