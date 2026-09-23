@@ -48,6 +48,7 @@ Imported from [cloudflare/skills](https://github.com/cloudflare/skills) (Apache-
 | **playwright-testing** | Playwright E2E tests (selectors, fixtures, traces, flaky tests, emulator project IDs) |
 | **ubs** | Pre-commit bug/security scanning (UBS CLI, output parsing, false-positive triage, .ubsignore) |
 | **async-state-machine-hardening** | Harden async workflows (queues, webhooks, cron, retries, idempotency, race conditions, state machines) |
+| **langfuse-evals** | LLM prompt testing & evals on self-hosted Langfuse (datasets, `run_experiment`, LLM-as-judge, online/prod evals, agent/RAG, scores, prompt mgmt/optimization, CI regression gating; Python + TS). Connect via API/SDK, configure in Langfuse. Ref: github.com/JordanChoo/csv-langfuse |
 
 ## Web & Frontend
 
