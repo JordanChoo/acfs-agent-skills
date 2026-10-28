@@ -57,6 +57,15 @@ Imported from [cloudflare/skills](https://github.com/cloudflare/skills) (Apache-
 | **astro-site** | Astro v5 static sites (Tailwind v4, MDX, content collections, sitemap, RSS, migrations) |
 | **directus** | Self-hosted Directus headless CMS, row-level multitenancy (`tenant_id` + filter rules), permissions/policies, SDK, custom extensions (hooks/endpoints/operations), schema snapshots |
 
+## Design & UI
+
+Imported third-party design skills. Both target frontend work; pick by job: **impeccable** for any design work on an existing or new UI (24 sub-commands), **hallmark** for building a new page/site from a brief (themes + slop lint).
+
+| Skill | When to use |
+|-------|-------------|
+| **impeccable** | Design, redesign, shape, critique, audit, polish, harden, animate or otherwise improve a frontend (web or native iOS/Android): `/impeccable <command> <target>` with 24 commands (`init` → PRODUCT.md, `document` → DESIGN.md, `critique`, `audit`, `polish`, `bolder`, `quieter`, `distill`, `typeset`, `layout`, `animate`, `live`, …). Launcher `scripts/impeccable` downloads a checksum-pinned engine binary to `~/.impeccable/bin/` on first run. Source: github.com/pbakaus/impeccable @ d34c87e (v4.8.0, Apache-2.0) |
+| **hallmark** | Build a NEW website/page/component that looks designed, not generated: deals 3 of 50 themes, builds from the visitor's job, lints in a browser for AI tells (`scripts/sloplint.mjs --render`), fresh-context review. Also `/hallmark redesign <path>` / `/hallmark audit <path>` (only when named). Never auto-applies to an existing design. Node 18+; render tier needs `puppeteer-core` + Chrome. Source: github.com/Nutlope/hallmark @ 6033bab (v2.0.0, MIT) |
+
 ## DevOps & CLI Tools
 
 | Skill | When to use |
