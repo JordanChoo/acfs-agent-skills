@@ -56,6 +56,7 @@ Imported from [cloudflare/skills](https://github.com/cloudflare/skills) (Apache-
 |-------|-------------|
 | **astro-site** | Astro v5 static sites (Tailwind v4, MDX, content collections, sitemap, RSS, migrations) |
 | **directus** | Self-hosted Directus headless CMS, row-level multitenancy (`tenant_id` + filter rules), permissions/policies, SDK, custom extensions (hooks/endpoints/operations), schema snapshots |
+| **modern-web-guidance** | Modern HTML/CSS/client-side JS patterns before writing any web UI code: dialogs/popovers, anchor positioning, container queries, view transitions, scroll-driven animation, forms/autofill/validation, a11y, dark mode, CWV (LCP/INP/CLS), passkeys, sanitization, web components, built-in AI. Runs `npx -y modern-web-guidance@latest search "<query>"` then `retrieve <id>` (offline local search; Node 22+; sends anonymous telemetry unless `DISABLE_TELEMETRY=1`); `guides/` vendored as an offline copy. Not for backend/infra/tooling. Source: github.com/GoogleChrome/modern-web-guidance @ 4dd9683 (v1.0.0, Apache-2.0; guides CC-BY 4.0) |
 
 ## Design & UI
 
