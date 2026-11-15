@@ -175,9 +175,9 @@ and return `action: auto | review` with `reasons`.
   does not settle it", not as "false". After that downgrade, `probabilities` and `confidence`
   still show the original `contradicted` distribution, so act on `verdict`, never on the
   largest probability.
-- **Gate `supported` on `subject` yourself.** The server downgrades only `contradicted`. A
-  `supported` verdict with `subject` below 0.5 can still come back `action: auto`, yet the model
-  is also saying the evidence is about something else. Treat it as `review`.
+- A `supported` verdict with `subject` below 0.5 stays `supported` but comes back `review` with
+  `off_subject`, whatever the thresholds: the evidence is probably about something else, so it
+  cannot be trusted to support the claim. An `insufficient` verdict is never flagged this way.
 - Evidence over 50 KB: trim it to the section the claims are about, or split it at section
   boundaries and send each part with only the claims that part covers.
 
@@ -367,7 +367,6 @@ fails too, stop and report it.
 - Reading `classify` as multi-label because two categories scored well.
 - Passing a snapshot ID (`jev-1.14.0`) as `model`.
 - Gating on `decide`'s `confidence` field instead of the probabilities.
-- Accepting a `verify` `supported` with `subject` below 0.5 because its `action` is `auto`.
 - Rebuilding `screen` with `decide` to go faster.
 - Parsing a response before saving it, then rerunning the paid call after a parser crash.
 - Untrusted text pasted into `decide` instructions or `classify` instructions.

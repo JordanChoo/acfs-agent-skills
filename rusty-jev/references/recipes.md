@@ -37,7 +37,8 @@ on labelled data.
    - Evidence over 50 KB: trim it to the relevant section, or split it at section boundaries
      and send each part with only its own claims.
    - Act on `verdict`.
-   - Treat `supported` with `subject` below 0.5 as `review`.
+   - `supported` with `off_subject` means the source is probably about something else: find a
+     better source for that claim.
    - `insufficient` means this source does not settle the claim.
 3. **`rerank`** passages from the surviving documents only (next recipe).
 

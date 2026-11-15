@@ -185,6 +185,9 @@ against 2 KB of evidence ≈ $0.00006; a full call (90 KB, 25 claims) ≈ 36,000
 - The second result shows the off-subject downgrade: the model said `contradicted`, but the
   evidence is probably about something else (`subject` 0.3 < 0.5), so the verdict became
   `insufficient`. `probabilities` and `confidence` still show the original distribution.
+- A `supported` verdict with `subject` below 0.5 keeps its verdict and gets `off_subject` and
+  `review`, whatever the thresholds. `insufficient` is never flagged for a low `subject`.
+  Exactly 0.5 counts as on subject.
 - Verdict declined: `verdict`, `confidence`, `margin` and `probabilities` are `null`, reasons
   `["refused"]`. Subject declined: `subject` is `null`, the verdict is kept and never downgraded,
   `refused` is added.
