@@ -50,6 +50,12 @@ Imported from [cloudflare/skills](https://github.com/cloudflare/skills) (Apache-
 | **async-state-machine-hardening** | Harden async workflows (queues, webhooks, cron, retries, idempotency, race conditions, state machines) |
 | **langfuse-evals** | LLM prompt testing & evals on self-hosted Langfuse (datasets, `run_experiment`, LLM-as-judge, online/prod evals, agent/RAG, scores, prompt mgmt/optimization, CI regression gating; Python + TS). Connect via API/SDK, configure in Langfuse. Ref: github.com/JordanChoo/csv-langfuse |
 
+## Decision APIs (MCP)
+
+| Skill | When to use |
+|-------|-------------|
+| **rusty-jev** | Calling the Rusty Jev MCP (TypeSafe Jev decision model via the `mcp.choostring.ventures` portal): pick between `rusty-jev_classify` / `verify` / `rerank` / `screen` / `decide` / `list_models`, batch and size calls, read `action`/`reasons`/`confidence`, handle errors without double-paying |
+
 ## Web & Frontend
 
 | Skill | When to use |
