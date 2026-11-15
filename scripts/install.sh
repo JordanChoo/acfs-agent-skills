@@ -75,7 +75,10 @@ link_one() {
 
   if [ -L "$target" ]; then
     local current; current="$(readlink -f "$target" 2>/dev/null || readlink "$target")"
-    if [ "$current" = "$source_path" ]; then
+    # A skill folder here may itself be a symlink to the skill's home repo (see README), so
+    # compare fully resolved paths on both sides.
+    local resolved_source; resolved_source="$(readlink -f "$source_path" 2>/dev/null || echo "$source_path")"
+    if [ "$current" = "$resolved_source" ]; then
       echo "  ~ $harness/$name (already linked)"
       return 0
     fi

@@ -124,7 +124,10 @@ audit_skill() {
   if [ -L "$target" ]; then
     local resolved
     resolved="$(readlink -f "$target" 2>/dev/null || readlink "$target")"
-    if [ "$resolved" = "$expected" ]; then
+    # The canonical folder may itself link to the skill's home repo, so resolve both sides.
+    local resolved_expected
+    resolved_expected="$(readlink -f "$expected" 2>/dev/null || echo "$expected")"
+    if [ "$resolved" = "$resolved_expected" ]; then
       record "$harness" "$skill" "ok" "symlinked to canonical repo"
     else
       record "$harness" "$skill" "drift" "symlink target mismatch ($resolved)"

@@ -39,7 +39,9 @@ run_one() {
   local detail="no scripts/self-test.sh"
 
   if [ -x "$runner" ]; then
-    if out=$(bash "$runner" 2>&1); then
+    # </dev/null: a self-test (or a tool it runs) that reads stdin would otherwise swallow the
+    # rest of the skill list fed to the loop below, silently ending the run early.
+    if out=$(bash "$runner" </dev/null 2>&1); then
       status="pass"
       detail=$(echo "$out" | grep -E '^PASS:' | tail -1)
       results_pass=$((results_pass + 1))

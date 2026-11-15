@@ -52,6 +52,26 @@ Some skills are written into `~/.claude/skills` and `~/.codex/skills` by their o
 cp -R ~/.codex/skills/rch/. rch/ && git add rch && git commit -m "rch: refresh snapshot"
 ```
 
+## Skills that live in their project's repo
+
+A skill that documents one project can live in that project's repo, next to the code it
+describes, so a change to the code and its skill land in one commit. Here its folder is a
+symlink to the project's copy, and everything else works unchanged: `install.sh` links the
+harnesses to `<repo>/<name>` as usual, and `install.sh` and `audit-drift.sh` compare fully
+resolved paths, so the extra hop is not drift.
+
+| Skill | Lives at |
+| --- | --- |
+| `rusty-jev` | `/data/projects/rusty-jev/skills/rusty-jev` (repo `JordanChoo/rusty-jev`) |
+
+Edit such a skill in its project repo and commit it there, not here. Only the symlink and the
+catalog row are tracked in this repo. On a machine without the project checked out at that
+path, the link dangles and the skill is simply not installed.
+
+To add one: put the skill at `<project>/skills/<name>/`, then here run
+`ln -s <project>/skills/<name> <name>`, add a catalog row and a row to the table above, and run
+`bash scripts/install.sh`.
+
 ## Daily workflow
 
 ```bash

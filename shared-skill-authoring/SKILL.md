@@ -16,6 +16,10 @@ Use this skill when working on the cross-harness skill library in `~/src/acfs-ag
 - `~/src/acfs-agent-skills` is the only source of truth.
 - `~/.claude/skills/*` and `~/.codex/skills/*` should be symlinks into that repo.
 - Never create or edit skills directly inside the harness-specific directories.
+- Exception: a skill folder here may be a symlink to the skill's home in its project's repo
+  (currently `rusty-jev` → `/data/projects/rusty-jev/skills/rusty-jev`; see README "Skills that
+  live in their project's repo"). Edit and commit such a skill in the project repo; here only
+  the symlink and the catalog row are tracked.
 - Exception: skills listed in `scripts/tool-managed.txt` (currently `rch`, `pfr`, `pi-agent-rust`) are owned by their tool's installer and live in the harness dirs as real directories. Never symlink or edit them there; refresh the repo's reference snapshot from the harness copy instead (`cp -R ~/.codex/skills/rch/. rch/`).
 
 ## Workflow
