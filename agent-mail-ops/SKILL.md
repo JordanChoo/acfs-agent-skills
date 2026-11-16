@@ -1,250 +1,208 @@
 ---
 name: agent-mail-ops
 description: >-
-  How to use MCP Agent Mail (the mcp__mcp-agent-mail__* tools) correctly, and how to diagnose and
-  recover it when it breaks. Use at the start of work in any project with Agent Mail, before
-  editing files other agents may touch (file reservations), when sending or answering agent
-  messages, on errors such as "Contact approval required", INVALID_AGENT_NAME, AGENT_NOT_FOUND,
-  FILE_RESERVATION_CONFLICT, "refusing forced release", FEATURE_DISABLED or a missing
-  sender_token, and when Agent Mail is slow, timing out or down: "AM is down", MCP disconnected,
-  health_check red, agent-mail.service, 127.0.0.1:8765, rogue `am serve-http` /
-  `mcp-agent-mail serve`, random-port configs, a failed nightly `am` update, or a mailbox rebuild.
+  Coordinate coding agents through MCP Agent Mail: session identity, inbox and acknowledgements,
+  targeted messages, file reservations and shared-tree handoffs. Use at session start in an
+  Agent Mail project, before shared-file edits, or for registration/token/contact/conflict errors,
+  ambiguous write timeouts, FEATURE_DISABLED, outages and service recovery. Prevent duplicate
+  identities/messages, preserve peers' work, and separate ordinary coordination from operator repair.
 ---
 
-# Agent Mail
+# Agent Mail: coordinate, then keep working
 
-Agent Mail lets agents on this VPS claim files and talk to each other. Part 1 is for every agent.
-Part 2 is for fixing the service, and every change there needs the owner's approval.
+Use the connected MCP tools and their **current schemas**. Names below are the
+server's tool names; discover their harness-specific prefix. Repository rules and
+existing user authorization take precedence. Routine coordination is authorized
+when the user/project requests it; this skill does not authorize unsolicited mail.
+Service repair is a separate operator task, never an automatic response to a tool error.
 
-Evidence behind each rule (from past sessions): [references/evidence.md](references/evidence.md).
-Mailbox recovery procedure: [references/recovery.md](references/recovery.md).
+## Happy path
 
-# Part 1: Using Agent Mail
+1. **Resolve project and identity once.** Use the main repository's absolute path
+   for `project_key` / `human_key`, including from a worktree. If this session has
+   no identity, call `macro_start_session(human_key, program, model,
+   task_description)` once, omitting a name. Save the returned `agent.name` and
+   `agent.registration_token` in private session context, never git or shared
+   memory. Read its inbox. If you already have a valid session identity, reuse it.
+2. **Read before editing; reserve before writing.** Inspect existing diffs and
+   ownership. Call `check_file_reservation_conflicts(project_key, agent_name,
+   paths=[exact project-relative files])`, then `file_reservation_paths` with
+   those paths, `ttl_seconds=3600`, `exclusive=true`, and the bead/task as `reason`.
+   Supply a stable `idempotency_key` when the schema supports it. Inspect **both
+   `granted` and `conflicts`**; the precheck is not an atomic lock. Save actual
+   grant IDs and expiry; a request or partial grant is not full ownership.
+3. **Tell affected agents.** Confirm real recipients with `whois`; use the
+   existing task thread or `thread_id="<bead-id>"` and subject `[<bead-id>] Start`.
+   Use `reply_message(message_id=...)` for the same discussion. Keep the message
+   short: paths, intended change, expected handoff. If no relevant peer exists,
+   do useful work without inventing recipients or sending an online broadcast.
+4. **Check your inbox at checkpoints.** Before a conflicting edit, after a
+   meaningful milestone, and before handoff, fetch a bounded page for your own
+   identity. Read actionable bodies, act/reply if needed, then acknowledge each
+   read message whose `ack_required` is true. Reading is not acknowledgement;
+   acknowledging is not the same as answering a request.
+5. **Finish deliberately.** Verify diffs, tests, staged paths and current leases.
+   Land your authorized changes, then release only your grant IDs or exact paths
+   with `release_file_reservations`. Report the commit, checks and unfinished work
+   in the task thread. If blocked/abandoning, release what you no longer use and
+   update the bead; do not hold leases while waiting indefinitely.
 
-## The happy path
+If an operation's result is unclear, follow the table below **before retrying**.
+Never print tokens, approval bundles, config credentials or full private bodies.
 
-1. **Start once.** `macro_start_session(human_key="/abs/repo/path", program, model,
-   task_description)`. Omit any name; the server issues one (adjective+noun). Keep the returned
-   `agent.name` and `agent.registration_token` for the whole session, in your working notes, not
-   in shared memory files. Read the returned `inbox`.
-2. **Before editing, check, then reserve.**
-   `check_file_reservation_conflicts(project_key, agent_name, paths)` is read-only. If clear,
-   `file_reservation_paths(project_key, agent_name, paths=[exact files], ttl_seconds=3600,
-   exclusive=true, reason="<bead-id>")`. Save the `id` of each entry in `granted`.
-3. **Announce in the bead's thread.** `send_message(..., to=[names you just confirmed],
-   thread_id="<bead-id>", subject="[<bead-id>] Start: ...", sender_token=<token>)`. Reply to
-   existing threads with `reply_message`; do not start a new thread for the same work.
-4. **Check the inbox at natural checkpoints** (after a commit, before finishing):
-   `fetch_inbox(project_key, agent_name, since_ts=<last check>)`. Acknowledge every message with
-   `ack_required` (`acknowledge_message`).
-5. **Finish.** Push, then `release_file_reservations(project_key, agent_name,
-   file_reservation_ids=[your ids])` (or `paths=[the same paths]`), then `[<bead-id>] Completed`
-   in the thread.
+## Errors and uncertain outcomes
 
-`project_key` / `human_key` is always the **main repo's absolute path**, even inside a worktree.
-Resource URIs use the slug instead (the path without its leading `/`, with `/` turned into `-`):
-`resource://agents/data-projects-scry` lists agents, and
-`resource://file_reservations/data-projects-scry` lists reservations.
+| Situation | Next action and stop condition |
+|---|---|
+| Nameless registration timed out | It **may have succeeded**. Check health once; use a session-bound `resolve_pane_identity(project_key, pane_id)` when available. Only resume an identity proven yours by saved session state or pane binding. Matching program/model/time/task is discovery evidence, **not ownership proof**. If ownership is ambiguous, record that and continue independent work; don't adopt a peer or create repeated identities. |
+| Context compacted; name/token retained | Reuse the same identity. Do not register every turn or after every compaction. If writes actually reject a stale token, use the supported registration/resume flow for your **own server-issued name**, preserving any required proof. A genuine new concurrent session gets its own identity. |
+| `INVALID_AGENT_NAME`, proof-gate rejection | Omit a name for first registration. Never invent role names or select an example from documentation. Supply operator-issued `registration_proof` only when required and available; do not fabricate proof or disable the gate. |
+| `sender_token` absent/rejected | Read the current schema. Pass the private registration token on writes **that accept `sender_token`**; not every mutation accepts that field. Current send/reply can be unverified when omitted; that is not verified identity. Do not inject unsupported arguments or switch to raw HTTP. |
+| Reservation conflicts | Stop editing affected paths, including script/editor routes. A reply that includes a grant **and** an overlapping conflict is still contended. Release unused grants if appropriate, contact the holder in the task thread and switch work. Never convert to non-exclusive merely to get past an exclusive holder. |
+| Lease expired / reaper notice | Re-read current files/diffs, recheck conflicts and reserve again before writing. Renew your active IDs with `renew_file_reservations(file_reservation_ids=[...], extend_seconds=1800)` before expiry. A zero renewal/release count is a reconciliation signal, not proof of ownership or successful cleanup. |
+| Reservation/send/reply timed out | Delivery/grant is **unknown**, not failed. If a supported `idempotency_key` was included, retry at most once with the **same key and identical arguments** within its retention window. Never change payload under that key (`IDEMPOTENCY_KEY_CONFLICT`), generate a fresh key to replay, or assume a send was not delivered from generic timeout wording. Without a key, reconcile via supported reservation/thread/message reads before deciding whether another write is needed. |
+| `Contact approval required`, `CONTACT_REQUIRED` or `CONTACT_BLOCKED` | Confirm recipient/project, request contact once if permitted, then wait while doing other work. An existing thread is appropriate for the same discussion **only if the server permits the reply**; it is not a contact-policy bypass. Do not route through unrelated threads, alternate identities or broad contact-policy changes. |
+| Tool returns `isError` / error text in content | Inspect the tool envelope and payload; transport success is not operation success. Do not mark a message sent, lease acquired, or gate passed on a returned error. |
+| Tool schema differs / tool unavailable | Discover supported tools/resources or inspect local help. Do not invent `list_agents`, paths, arguments or CLI subcommands. Use supported project roster/resource reads where exposed; unavailable tools are a coverage gap, not permission to inspect the mailbox database. |
 
-## Identity rules
+### Reservations and shared files
 
-- **One identity per session.** Never create a second one: every `macro_start_session` or
-  `register_agent` call *without* your name makes a new agent (the server holds about 790).
-  Calling `register_agent` *with* your own name is fine; it updates the same agent.
-- **A registration that timed out may have succeeded.** Do not fire it again straight away. Run
-  `health_check`, then read `resource://agents/<slug>` and look for an agent created in the last
-  few minutes with your program and model. Found it: that is you; adopt it by calling
-  `register_agent` with its name (that returns the token). Not found: register once more.
-- **Resuming** (new turn, after context compaction, or a 403 on writes because the token went
-  stale): call `register_agent` with your own server-issued `name` and the same program/model.
-  It returns the same agent with a new token. With tmux,
-  `resolve_pane_identity(project_key, pane_id="%N")` recovers it.
-- **Never choose a name yourself** (`INVALID_AGENT_NAME`), and never share one identity between
-  sessions through a memory file.
-- **Pass `sender_token`** on every write call that takes it. Do not fall back to raw HTTP.
+- Use exact files; avoid broad `src/**`, `tests/**`, `.beads/**` leases. Hold
+  `.beads/issues.jsonl` only for sync/commit with a short TTL (for example 300s).
+- A reservation is **advisory coordination**, not a filesystem lock, exclusive
+  Git index, or permission to overwrite existing peer edits. Recheck before
+  commit/push when concurrent changes or lease expiry make the snapshot stale.
+- Compare `expires_ts` as an offset-aware timestamp against current UTC; do not
+  subtract Berlin local clock text from UTC or infer expiry from an old message.
+- Do not force-release another agent based on `last_active_ts == inception_ts`.
+  A refused force-release is final; recent filesystem/git/mail activity matters.
+  Wait for expiry/reaper, get the holder's cooperation, or report the blocker.
+- Find IDs in your grant response, the supported reservations resource, or the
+  bounded read-only `am file_reservations active` CLI. Never grep the mailbox
+  archive or read live SQLite to recover coordination state.
+- Escalate a real blocking dependency with file, holder, expiry and task; do not
+  wait out a long lease before telling the owner when no useful work remains.
+- Build slots were `FEATURE_DISABLED` on this VPS at audit time. Do not enable
+  worktrees/features or fire an unawaited acquisition. Coordinate heavy builds
+  with relevant peers and follow the project's local/remote build policy.
 
-## Messaging rules
+### Messaging and inbox cursors
 
-- **Confirm every recipient first** with `whois(project_key, agent_name)`. On this server,
-  sending to a name that does not exist **silently creates a placeholder agent** and delivers
-  to it, so a typo or an example name from the docs (`BlueLake`, `GreenLake`) reaches no one.
-- **"Contact approval required"**: reply in an existing thread that already includes them (even
-  another bead's thread; one line pointing at your bead's thread is enough). Get a message id for
-  `reply_message` from `resource://thread/<thread_id>` or `search_messages`. Otherwise call
-  `request_contact` once and wait. Do not loop on it. The same applies to any first message,
-  including to a reservation holder.
-- **No "I'm online" messages** or broadcasts to everyone. Message the agents whose work you touch:
-  the holders in `resource://file_reservations/<slug>` and the people in the bead's thread.
-- **Keep bodies short**; link to a bead, file or commit instead of pasting logs.
-- **Never read another agent's inbox**, and never poll: no `fetch_inbox` in a loop, no
-  `include_bodies` without `since_ts`.
-- Owed acknowledgements: `resource://inbox/<your name>?project=<abs path>`, or `am acks pending`
-  (read-only; CLI calls can hang when the server is struggling).
+- `whois` confirms identity, not availability/ownership. Unknown recipients may
+  auto-register placeholders depending on server policy, so never probe by send.
+  A plain name is project-local; qualified cross-project recipients need approved
+  contact links. Do not mix local and cross-project destinations in one send.
+- Treat project-wide mailbox addresses and `broadcast` as broad delivery. Use
+  only when scope and authorization justify it; prefer affected named peers.
+- Resource URIs may use a **returned project slug**, while tool calls use its
+  main absolute path. Discover the resource template; do not guess a slug by
+  blindly replacing punctuation. Example only: `resource://agents/data-projects-scry`.
+- Initial inbox fetch may omit `since_ts` with a small explicit limit. Fetch
+  bodies only for the bounded actionable backlog; do not blindly ack subject-only
+  results, read someone else's inbox, or repeatedly request all history.
+- `fetch_inbox` normally marks returned messages read; use `mark_read=false` for
+  non-consuming checks when supported. `unread_only` does not find already-read
+  but unacknowledged messages. Use your overdue/pending-ack view too.
+- A full page is not a drained inbox. `since_ts` is strictly newer, and timestamp
+  ties can hide messages. Do not advance it to wall-clock now or past an unprocessed
+  full page. Use supported pagination or inbox delivery events when available;
+  for events, persist `next_cursor` **only after processing**, use `has_more`, and
+  never substitute a message ID for an event cursor. Otherwise fetch overlapping
+  bounded windows, deduplicate by message ID, and reconcile backlog before
+  advancing. If the API cannot enumerate a capped backlog, report the gap instead
+  of claiming all mail read. Drain pages as finite work, not an idle polling loop.
+- Reply/ack flags can be inherited. Set `ack_required=false` on an informational
+  reply when no acknowledgement is needed; avoid acknowledgement ping-pong.
 
-## Reservation rules
+### Shared Git tree
 
-- **Reserve before the first edit**, not after. A `released: 0` at the end means you never held
-  anything.
-- **Narrow paths.** Exact files, not `src/**` or `tests/**`. A glob conflicts with every file under
-  it, in both directions.
-- **`.beads/issues.jsonl`**: hold it only for `br sync --flush-only` plus the commit, with a short
-  TTL (300 s). Long leases on it block every agent.
-- **On a conflict, never edit the file anyway**, never edit it through a script, and never
-  "proceed advisory". Message the holder in the bead thread (`importance="high"`,
-  `ack_required=true`), add a bead comment, and switch to other work. If the holder has not
-  replied by the time the lease expires and you are still blocked, tell the owner in your reply
-  to them (name the file, holder and bead).
-- **A refused force-release is final** ("Reservation still shows recent activity; refusing
-  forced release"). `last_active_ts == inception_ts` does **not** prove an agent is dead; let
-  the lease expire or the server's reaper handle it.
-- **Find reservation ids** in your `granted` reply, in `resource://file_reservations/<slug>`, or
-  with `am file_reservations active` (read-only, but CLI calls can hang when the server is
-  struggling; prefer the resource). Never grep the mailbox archive.
-- **Renew** before expiry: `renew_file_reservations(file_reservation_ids=[...],
-  extend_seconds=1800)`; ids are a list, not a string. After an expiry or a reaper notice,
-  re-check your work and reserve again.
-- **Build slots are disabled** on this server (`FEATURE_DISABLED`). Before a heavy build, tell
-  the agents holding reservations in the project, in your bead's thread.
-- **Waiting for a reply**: do other work and check the inbox at your next checkpoint. There is no
-  need to wait in a loop.
+Review `git diff` and `git diff --cached` for your paths before committing.
+Stage only your own changes. If unrelated paths are staged, leave them intact;
+a path-limited commit still includes **all current content of those paths**, so
+coordinate any mixed-file edits first. Never stash, reset, revert, or discard peer
+work to manufacture a clean tree. Do not push an accidentally absorbed change
+blindly: inspect what landed and coordinate the next step; avoid rewriting history.
 
-## Shared git working tree
+Fetch and inspect upstream before pushing. Rebase only when the tree/index is
+suitable and the operation is authorized. If `git pull --rebase` refuses peer WIP,
+do not use autostash or force cleanup. Preserve it, coordinate, or use a fresh
+isolated worktree when appropriate. A verified fast-forward push of your intended
+commit can proceed without a rebase; a rejected push needs reconciliation.
 
-- Stage only your own paths; check `git diff --cached --stat` before every commit. If other
-  agents' changes are already staged, leave them staged (the index is shared) and commit only
-  yours with a pathspec: `git commit -m "..." -- <your paths>`. That commits the whole current
-  content of those paths, so first check `git diff -- <your paths>` holds only your hunks.
-- Never stash, revert or reset to "isolate" changes: it sweeps up other agents' work. If your
-  commit picked up another agent's change, push it and say so; do not revert it.
-- Before pushing, check whether peers pushed, then `git pull --rebase`.
+## Outage: bounded retry, useful fallback
 
-## When Agent Mail is slow or down
+Retry a failed read **once** after a short pause; writes use the reconciliation
+rules above. After continued failure, stop probing every turn. Record affected
+tasks, uncertain deliveries/grants and coordination in bead comments or the
+project's agreed fallback, keeping secrets out. Continue useful independent work
+according to AGENTS.md, but **do not override a known conflict** because mail is
+down. Use read-only investigation or a separate fresh patch/worktree if shared
+ownership is unclear. Reconcile outstanding mail/leases when service returns.
 
-1. Retry the call **once** after a pause.
-2. Still failing: carry on without it, as AGENTS.md says. Record coordination as bead comments
-   (`br comments add`), keep to files you clearly own, and re-sync when it returns.
-3. Do not probe it every turn, and do not work around it: no `curl` JSON-RPC calls in place of
-   the tools, no reading or writing `storage.sqlite3`, no manual server, no restart. Fixing the
-   service is Part 2, with the owner's approval.
+Do not bypass tools using raw JSON-RPC, CLI writes, a database editor, second
+server, or a new port. CLI help and bounded diagnostics below are distinct from
+using an alternate transport to repeat a failed mutation.
 
-# Part 2: Fixing Agent Mail
+## Operator diagnostics and recovery
 
-## Contract
+Production on this VPS is the managed user `agent-mail.service`, endpoint
+`http://127.0.0.1:8765/mcp/`, archive `~/.mcp_agent_mail_git_mailbox_repo`.
+Check local configuration/version rather than treating this as portable setup.
+Never hand-launch `am serve-http` / `mcp-agent-mail serve`, use `--takeover`, write
+a second unit, bridge ports, kill the PID, or change live client ports to repair
+an outage. Two writers on one mailbox are a corruption risk.
 
-- Production Agent Mail is the managed user service `agent-mail.service`
-  (`Restart=always`), endpoint `http://127.0.0.1:8765/mcp/`, mailbox
-  `~/.mcp_agent_mail_git_mailbox_repo`. The `am` binary in `~/mcp_agent_mail/` is upgraded by the
-  ACFS nightly job.
-- **Never** launch `am serve-http` or `mcp-agent-mail serve` by hand. Older builds stopped the
-  managed server to take over (and systemd fought back); 0.3.40 refuses while a live server
-  answers on the same port, `--takeover` kills it, and another port gives two writers on one
-  mailbox, the known corruption path. Never write a second unit, never kill the PID (systemd
-  restarts it), never bridge a stale port to 8765.
-- Never point configs at a random localhost port unless the owner wants an isolated sandbox with
-  its own storage.
-- Do not kill processes or restart services without the owner's approval.
-
-## Fast triage (read-only; every network call has a timeout)
+For a repair request, gather bounded read-only evidence, then prepare the exact
+change and affected service/configs for approval **unless already explicitly
+covered by the user's authorization**. Obey stricter project prohibitions. A
+routine coding task is not service-restart authority.
 
 ```bash
 systemctl --user status agent-mail.service --no-pager
 systemctl --user show agent-mail.service -p NRestarts -p ActiveEnterTimestamp
 ss -ltnp | rg ':8765'
-curl -m 10 -fsS http://127.0.0.1:8765/health
-ps -ef | rg 'mcp-agent-mail serve|am serve-http|am (mail|robot|doctor|file_reservations)' | rg -v rg
-am doctor health
-am doctor drain
+curl -m 10 -fsS -A 'agent-mail-ops-skill' http://127.0.0.1:8765/health
+timeout 15s am doctor health
+timeout 15s am doctor drain
 ```
 
-`/health` is liveness only; it says `ready` even on a corrupt mailbox. The verdict agents act on
-is the `health_check` tool (`health_level`, `verdicts`, `health_level_contributors`):
+Use the connected `health_check` tool for its structured `verdicts`, contributors,
+queue/pool pressure, integrity timestamps and archive lag. `/health` readiness is
+liveness, not proof of integrity. Do not raw-curl a tool call when MCP is down.
+Bound CLI/network diagnostics; a hung `am mail`/`am robot` can hold activity locks.
+Read only the needed journal excerpt; redact config/log secrets before sharing.
 
-```bash
-curl -m 20 -sS -X POST http://127.0.0.1:8765/mcp/ -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"health_check","arguments":{}}}' \
-  | rg -o '"health_level":"[a-z]+"|"failing_verdicts":\[[^]]*\]'
-```
+| Evidence | Decision |
+|---|---|
+| Yellow solely from retention, critical verdicts green | Inspect bounded `am doctor reclaim --dry-run` if relevant. No reconstruction/restart. Consolidation can preserve evidence without freeing space; no automatic `--yes`. |
+| Timeout with `pool_acquire`, zombie dispatch, no fresh integrity evidence | Availability is degraded; corruption is **unconfirmed**. Historical successful integrity checks do not rule out later corruption. Prepare scoped operator intervention; don't declare the DB clean or rebuild speculatively. |
+| `/health` ready but current integrity verdict red | Follow [recovery.md](references/recovery.md) only under authorized operator scope. Verify evidence and archive completeness first. |
+| Single client fails while service works | Inspect that client's actual config/session. Claude may use `~/.claude.json`; other harnesses have their own files. Read URLs with credentials redacted, not a filesystem-wide config dump. |
+| Manual competing server or crash loop | Identify unit/listener/owner with read-only checks. Ask the owning session/operator; don't kill it or start another listener. |
+| Known post-recovery GH#151 pattern | A consistent fresh snapshot, fresh server evidence and working authorized operations may corroborate a false positive. Do not assume every red verdict is that bug or repeat recovery solely for a color. |
 
-Then the journal, version and nightly update:
+Config setup can skip tokenless entries; broad `am setup run` or doctor fix can
+rewrite unrelated clients. If configuration repair is authorized, back up exact
+files, change only intended URLs, inspect diffs and reconnect affected clients.
+Never dump credentials or run bare `am doctor fix`. Updates belong to the existing
+managed release path; check version/help and nightly logs, never chase a source
+build or reset the tool checkout during a coding task.
 
-```bash
-journalctl --user -u agent-mail.service --since -3h --no-pager | rg -i 'malformed|corrupt|integrity|quarantin|reconstruct|zombie|pool_acquire|blocking dispatch' | tail -20
-am --version && am update --check
-tail -25 "$(ls -t ~/.acfs/logs/updates/nightly-*.log | head -1)" | rg -i 'agent mail|minisign|checksum'
-```
+Read [recovery.md](references/recovery.md) before any mailbox recovery proposal.
+It covers consistent snapshots, drain checks, archive-only data-loss risks,
+startup wait bounds and the verification/stop criteria. No live repair is part
+of this skill's tests.
 
-Config drift (stale ports in live or backup configs):
+## Evidence and tests
 
-```bash
-rg -n '127\.0\.0\.1:[0-9]+/(mcp|api)/' /data/projects /home/ubuntu \
-  -g 'settings.local.json' -g '*.mcp.json' -g '*.bak' -g 'settings.json' -g 'config.toml' -g '.claude.json'
-```
-
-## Decision rule
-
-| Symptom | Likely cause | Next step |
-| --- | --- | --- |
-| `/health` fails, a rogue `am serve-http` / `mcp-agent-mail serve` exists, or `NRestarts` is high | Split brain from a manual server; the unit crash-loops on the taken port | Ask the owning session to stop it, or ask the owner; then let systemd recover |
-| `/health` times out or tool calls hang; journal shows `zombie`, `pool_acquire` or `blocking dispatch` | Wedged or saturated server | With approval: `systemctl --user restart agent-mail.service`, then wait about 2 minutes (self-heal refuses connections meanwhile) and recheck |
-| `/health` ready, `health_check` red with `integrity_check` failing | Corrupt SQLite (upstream FrankenSQLite bug, recurs) | [references/recovery.md](references/recovery.md). Exception: after a completed recovery, red with `functionally_degraded: false`, working writes, and `ok` from an integrity check on a complete copy (with `-wal` and `-shm`) is the known GH#151 false positive; record it, do not recover again |
-| `health_check` yellow on `retention` only | Recovery debris and staging on disk, not corruption | `am doctor reclaim --dry-run`, show the owner; it moves, never deletes |
-| `/health` fine, one harness still failing | Client config drift or a stale client session (Claude reads `~/.claude.json`; Codex, Cursor, Gemini, Factory read their own configs) | Fix the config (below), restart that client |
-| `am` CLI commands hang or say the mailbox is locked | Stale `am mail` / `am robot` processes holding the activity lock | Show the owner the processes from triage; prefer the MCP tools or `am robot` |
-| Nightly log says `[fail] MCP Agent Mail` and `am update --check` shows a newer release | Stuck upgrade (stale installer checksum, missing `minisign`) | Report to the owner; never build `am` from source or reset `~/mcp_agent_mail` |
-
-`am doctor check` warnings right after a recovery are secondary evidence; `/health`, the
-listener and `health_check` are authoritative.
-
-## Safe remediation order (each step with the owner's approval)
-
-1. Stop the rogue server through its owning session.
-2. Restore configs to `http://127.0.0.1:8765/mcp/`:
-   `am setup run --yes --agent codex,cursor,gemini,factory,windsurf` (add
-   `--no-user-config --project-dir <dir>` per project). It **skips entries that have no bearer
-   token**; fix those, and inert `mcpServers` blocks in `~/.claude/settings.json` and
-   `.claude/settings.local.json`, by editing the URL only. Old ntm-spawned servers left ports in
-   `<agent>.mcp.json`, `.claude/settings.local.json`, `~/.codex/config.toml` and the mailbox's
-   `.setup-self-heal/*.json`: sweep all of them.
-3. Restart `agent-mail.service` only if it is still unhealthy, and wait about 2 minutes.
-4. If only one harness misbehaves: `bash ~/src/acfs-agent-skills/scripts/audit-drift.sh`.
-5. Recheck `/health` and `health_check`, then have affected agents reopen their clients.
-
-## Hazards
-
-- The ACFS nightly job (04:00) reinstalls `am`; its fallback launcher can start a second server
-  when `/health` is not ready. `ACFS_SKIP_AGENT_MAIL=1` (drop-in on `acfs-nightly-update.service`)
-  disables that; the binary still updates.
-- Never run bare `am doctor fix` while agents are live: it rewrites configs, stops the listener
-  and reconstructs. Use `--dry-run` or `--only <id>` (ids from `am doctor fixers`).
-- Never open the live `storage.sqlite3` with `sqlite3`, not even a `pragma`, and never edit rows:
-  the archive restores them and the writes risk corruption. Work on a copy that includes `-wal`
-  and `-shm`.
-- Every restart is a recovery cycle; do not restart "to be safe".
-
-## Local evidence paths
-
-- `~/.config/systemd/user/agent-mail.service` and `agent-mail.service.d/`
-- `~/.config/systemd/user/acfs-nightly-update.service.d/`
-- `~/.acfs/logs/updates/nightly-*.log`
-- `~/AM_NEXT_STEPS.md`
-- `~/.mcp_agent_mail_git_mailbox_repo/doctor/forensics/storage.sqlite3/<verb>-<ts>/summary.json`
-- `~/am-recovery-20260903/` (Sep 2026 incident snapshots)
-- `/data/projects/<project>/.ntm/logs/am-*.log`
-
-## Anti-patterns
-
-Using it:
-- Registering again after a timeout, or once per turn.
-- Sending to a name you did not just confirm with `whois` (creates a ghost agent).
-- Editing a file someone else holds, by any route.
-- Force-releasing because `last_active_ts == inception_ts`.
-- Grepping the mailbox archive for reservation ids.
-- Polling `fetch_inbox`; reading another agent's inbox.
-- Raw `curl` JSON-RPC or SQLite in place of the tools.
-
-Fixing it:
-- A second server on any port, a second unit, a port bridge, killing the PID.
-- Treating `/health` `ready` as healthy, or `am doctor check` alone as down.
-- Bare `am doctor fix`; touching the live database.
-- Restarting without approval; building `am` from source.
+[references/evidence.md](references/evidence.md) distinguishes observed skill
+loads, broader historical failures, live schema observations and inference.
+[tests/scenarios.json](tests/scenarios.json) preserves scenario prompts and
+expected decisions. Run `bash scripts/test-all.sh --skill agent-mail-ops` for
+static regressions and optional `--live` schema/help checks via the self-test
+runner. Missing live infrastructure is reported **not run**, never a live pass.
+Independent dry-run answers are useful behavioral evidence, not a statistical
+benchmark. Tests never send mail, register probe identities, grant/release leases,
+change contacts, or repair the service.
+The optional live test uses only HTTP `tools/list` schema discovery with bounded
+timeouts and a named User-Agent; it never calls a tool through raw HTTP.
