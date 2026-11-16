@@ -1,168 +1,208 @@
 ---
 name: br
 description: >-
-  How to use br (beads_rust), the dependency-aware issue tracker in `.beads/` (SQLite
-  beads.db plus git-tracked issues.jsonl), without the mistakes agents repeat. Use when
-  picking, claiming, creating, updating or closing beads; syncing `.beads/` with git;
-  after a git pull or rebase; resolving an issues.jsonl conflict; on errors such as
-  "cannot claim blocked issue", "database is busy", "Refusing to export stale database",
-  "UNIQUE constraint failed", "unrecognized subcommand 'prime'" or "unexpected argument
-  '--add-note'"; and when AGENTS.md br instructions disagree with `br --help`.
+  Use br (beads_rust) safely for ready-work selection, atomic claims, issue text,
+  dependency graphs, evidence-bound closure, and SQLite/JSONL sync in shared repos.
+  Use before br writes, after pull/rebase, and for busy/stale/import/merge failures,
+  blocked claims, unsupported flags, or tracker changes missing from Git. Preserve
+  unpublished DB state, peers' claims and exact-ID graph data; never force through
+  safety refusals or mistake syntax support for permission.
 ---
 
-# br
+# br: claim useful work, preserve the tracker, land the evidence
 
-br stores beads in `.beads/beads.db` and exports them to `.beads/issues.jsonl`, the file git
-tracks. br never runs git; committing is your job. This skill was built from about 100 past
-sessions on this VPS and checked against br 0.7.6 (`scripts/test_br.py` replays every failure
-case below). Evidence: [references/evidence.md](references/evidence.md).
+Read the repository's AGENTS.md and the bead before acting. **Repository policy
+and user authorization win.** `br --help` determines syntax/capability, not whether
+an operation is allowed. This skill does not override no-force/no-deletion rules,
+closure gates, milestone order, or coordination requirements.
 
-## The happy path
+The tracked JSONL is the portable Git record; the live DB can contain **unexported
+issues, comments, relations and audit history**. Calling it disposable is not
+permission to rebuild or replace it. `br` does not run Git or publish your work.
+
+## Happy path
+
+1. **Confirm routing and supported syntax.** Check `br --version`, `br where
+   --json` and, when needed, `br info --json` / command-specific help. Confirm the
+   repository, database, JSONL, prefix and worktree arrangement. Inspect whether
+   `BEADS_DB`, `BEADS_JSONL`, command `--db`, or local configuration redirects
+   operations. Do not copy an unrelated DB/JSONL or initialize another workspace
+   because IDs seem missing. Worktrees may have separate DBs; don't assume claims
+   are atomic across independent copies.
+2. **Reconcile after Git changes.** In a normal clean, coordinated state, run
+   `br sync --import-only` after pull/rebase before issue edits, then verify the
+   expected records. Before pulling, flush and land local tracker changes under
+   the project coordination rule. If already pulled with unexported DB work, or
+   markers/semantic conflicts exist, stop routine sync and use the recovery
+   checklist below. Do not flush stale DB contents over newly arrived JSONL.
+3. **Pick, inspect, claim.** `br ready --json`; optionally `bv --robot-triage`
+   (never bare `bv`). Fresh `br show <id> --json` confirms status, assignee,
+   dependencies, acceptance criteria and inherited instructions. Then:
 
 ```bash
-br ready --json                                   # 1. find unblocked work
-br show <id> --json                               #    read it, check nobody holds it
-br update <id> --claim --actor <your-name>        # 2. claim (atomic: assignee + in_progress)
-# ... do the work, commit the code, rebase, push ...
-br close <id> --reason "Completed. commit=<final sha>; tests: <names> passed"   # 3. close
-br sync --flush-only                              # 4. export; always run it ("Nothing to export" is fine)
-git add .beads/issues.jsonl                       # 5. stage the tracker explicitly
-git commit -m "beads: close <id>" && git push     # 6. the close is a change too: commit and push it
+br update <id> --claim --actor <your-session-name>
 ```
 
-After a `git pull`, or once a rebase has finished, run `br sync --import-only` before any other
-br command. (During a conflicted rebase, follow the conflict recipe below instead.)
-
-Names used below: `--actor` is your Agent Mail name (or your agent's name if the project has no
-Agent Mail). "The owner" is the human you work for. "Message the holder" means Agent Mail (see
-the agent-mail-ops skill), or a `br comments add` on the bead when Agent Mail is down.
-
-## When AGENTS.md and br disagree, br wins
-
-Several AGENTS.md files on this VPS teach commands br 0.7.6 does not have. Check with
-`br <command> --help` and use the real one:
-
-| Written in some AGENTS.md | Use instead |
-| --- | --- |
-| `br prime` | `br ready --json` (and `br robot-docs guide` for the agent guide) |
-| `br import -i .beads/issues.jsonl` | `br sync --import-only` |
-| `br update <id> --add-note "..."` | `br update <id> --append-notes "..."` or `br comments add <id> "..."` |
-| `br update <a> --blocks <b>` | `br dep add <b> <a>` (b depends on a) |
-| `br list --parent <id>` | `br ready --parent <id> --json`, or `br show <id> --json` |
-| `br update <id> --status closed` | `br close <id> --reason "..."` |
-| `br doctor --fix` | `br doctor` first (read-only); `--fix` is an alias of `--repair`, which **rebuilds the DB from JSONL**: dry-run it first |
-
-If you fix a project's AGENTS.md, say so in a bead comment so other agents know.
-
-## Rules
-
-### Claiming
-- **Never use `--force` to claim.** br refuses to claim a blocked issue and refuses a second
-  `--claim` on a held one; `--force` silently replaces a live claim (confirmed in tests; it
-  overwrote two agents' claims in rusty-jev). Blocked: pick other work or work the blocker.
-  Held: message the holder. Owner says take it: then `--force`, with a comment saying why.
-- **Recommendations go stale.** `bv --robot-next` and old triage output can name beads
-  already in progress. Re-check `br show <id> --json` (status, assignee) right before claiming.
-- **Cannot finish?** Return the claim with evidence instead of leaving it stale:
-  `br update <id> --status open --assignee ""` and a `br comments add` saying what is done
-  and what blocks it.
-
-### Closing
-- **Close only after the work is on the remote.** Commit, rebase, push, then close. A commit
-  hash cited before the final rebase may never reach main.
-- **The reason is evidence**, not "Completed": the final sha and the tests that actually ran.
-  Follow the project's closure rules (for example an `acceptance-tests` block). A test that
-  did not run is not a pass; leave the bead open.
-- To close epics, run `br epic close-eligible --dry-run` first; without `--dry-run` it closes.
-  Closed something by mistake: `br reopen <id>` with a comment saying why.
-
-### Writing and quoting
-- **Run br writes one at a time.** Parallel `br` writes (a close and a sync fired together,
-  several dependency edits at once) fail with "database is busy". After that error, check with
-  `br show <id> --json` whether the write landed before repeating it. If another agent may be
-  writing, add `--lock-timeout 30000` (milliseconds; two separate words).
-- **Long text goes in files:** `--description-file f.md`, `br comments add <id> -f f.md`.
-  Never keep a flag in a zsh variable: zsh passes `"$FLAGS"` as one word.
-- **Add, do not rewrite:** `--append-notes`, `--add-acceptance`, `br comments add`. Rewriting
-  `--notes` or `--description` loses what was there.
-- Priority is `0`-`4` or `P0`-`P4`, never `high`. Types: task, bug, feature, epic, chore,
-  docs, question.
-- **Check a change with `br show <id> --json`**, not by grepping issues.jsonl (`.13` also
-  matches `.130`) and never with `sqlite3`.
-
-### The database and the JSONL
-- **Never write to `beads.db` with SQL, never delete it, never commit it.** It is local and
-  disposable; issues.jsonl is the truth that git carries.
-- **"Refusing to export stale database that would lose issues"** means the JSONL has issues
-  the DB lacks (usually after a pull). Run `br sync --import-only`, then
-  `br sync --flush-only`. Do not use `--force` or `--allow-stale`.
-- **"UNIQUE constraint failed"** on import: run `br doctor --robot-triage` and follow its
-  recommendation. `br sync --import-only --rebuild` is the usual fix, but it **deletes DB
-  entries that are not in the JSONL**: use it only after `br sync --status` shows the DB holds
-  nothing the JSONL lacks, or after a successful `br sync --flush-only`.
-- **Health:** `br doctor` (read-only) or `br doctor --robot-triage` (one JSON read). Repair
-  only after `br doctor --repair --dry-run` shows the plan.
-- **Worktrees:** if IDs are missing, run `br sync --import-only` there. Never copy
-  issues.jsonl in or delete a DB to make it work.
-
-### Git and issues.jsonl
-- **Stage `.beads/issues.jsonl` explicitly**, never `git add -A` (it sweeps up other agents'
-  code). The file is one export of everyone's beads, so it may hold other agents' changes too;
-  committing them with yours is normal. Look at the diff first
-  (`git diff .beads/issues.jsonl`, by bead ID) so you notice anything unexpected, such as a
-  bead you did not mean to change. A separate tracker-only commit is fine.
-- **Flushed but not staged** is the most common miss (66 sessions in one study). Check
-  `git status --short .beads/` before you finish.
-- **Merge or rebase conflict in issues.jsonl: never hand-pick lines, splice, or patch it with
-  a script, and never commit one side as the answer.** Your own beads are in your local DB;
-  let br merge in the other side and rewrite the file itself (tested; every step is allowed by
-  the dcg hook, which blocks `git checkout --theirs/--ours -- <file>` and `git restore`):
-  1. resolve the code conflicts first;
-  2. write the other side's version beside the file, naming the ref you are rebasing onto or
-     merging in: `git show origin/main:.beads/issues.jsonl > .beads/issues.incoming.jsonl`;
-  3. `BEADS_JSONL=.beads/issues.incoming.jsonl br sync --import-only` (your DB now holds both);
-  4. `br sync --flush-only --force`: br regenerates issues.jsonl from the DB, replacing the
-     conflict markers. This is the one place `--force` belongs, because br, not you, writes
-     the file from a DB that holds everything;
-  5. check your beads and theirs with `br show <id> --json`, then `git add .beads/issues.jsonl`
-     (never the `issues.incoming.jsonl` sidecar; leave it untracked, or ask the owner before
-     removing it) and continue the rebase. When it finishes, `br sync --import-only`.
-
-  Two traps found while testing: with markers in the file, `br sync --flush-only` and
-  `br sync --merge` both refuse; and a plain `--import-only` then `--flush-only` exports
-  nothing ("no dirty issues"), so the file silently loses your beads. If issues.jsonl has no
-  conflict markers but you suspect it lacks the other side's beads (for example after a merge
-  git resolved on its own), `br sync --merge` alone is enough. If br reports a semantic
-  conflict (one bead edited on both sides), inspect both versions and ask; do not pick with
-  `--force-db` or `--force-jsonl`.
-
-### The work graph
-- Search before creating: `br search "<words>"` and `br list --json`. Close a duplicate
-  with a reason pointing to the original.
-- **Announce graph changes first** (new epics, dependency edges, re-parenting) in the
-  project's coordination channel. `br dep add <issue> <depends-on>`; br refuses cycles, and
-  `br dep cycles` must stay empty.
-- Commit new beads promptly; one audit found 400 bead creations left uncommitted.
-- Never run bare `bv` (it opens a TUI); use `bv --robot-triage` or `bv --robot-next`.
-
-## Quick reference (br 0.7.6)
+   Check the exit and `br show` result. A stale recommendation, a blocked issue,
+   or a peer's claim is not permission to force it. Pick another ready bead or
+   coordinate with its holder. An atomic claim protects only the resolved DB;
+   coordinate across worktrees/agents too. Reserve affected files through Agent
+   Mail before editing shared code; a bead claim is not a file reservation.
+4. **Work and record progress.** Keep writes sequential, append evidence/comments,
+   and re-read after errors or concurrent changes. Coordinate graph edits and
+   tracker exports. Follow the project's quality gates; do useful independent
+   work rather than idle-polling a held bead.
+5. **Close on evidence, then publish the closure.** Verify the final implementation
+   SHA is on the required remote branch after any rebase, required tests actually
+   ran and passed, and acceptance checks were satisfied. Only then:
 
 ```bash
-br create --title "T" -t task -p 2 --description-file d.md --labels a,b --parent <epic> --json
-br update <id> --claim --actor <name>
-br update <id> --append-notes "..." --add-acceptance "..."
-br comments add <id> "text"
-br dep add <issue> <depends-on>
-br close <id> --reason "..." --suggest-next
+br close <id> --reason "Completed. commit=<final sha>; tests: <names> passed"
 br sync --flush-only
-br sync --import-only
-br sync --status
-br doctor --robot-triage
-br robot-docs guide
 ```
 
-## Self-test
+   Verify closure and JSONL content; review/stage `.beads/issues.jsonl` explicitly,
+   commit and push that tracker change as well. Code landed is not tracker landed.
+   Leave incomplete work open/in progress with a concrete blocker. On abandoning
+   your own claim, record handoff evidence and release only that claim, rechecking
+   ownership first. Do not clear a peer's newer claim.
 
-`bash scripts/self-test.sh` replays every case in `scripts/test_br.py` (recorded failures
-must fail, recommended commands must work) in throwaway projects, and checks that every
-command in this file exists in the installed br.
+Use Agent Mail for ownership/export/graph coordination; when unavailable, follow
+project fallback rules and record a bead comment if the tracker is healthy.
+A coordination outage does not erase a known claim or file conflict.
+
+## Errors: inspect outcome before retrying
+
+| Symptom | Response |
+|---|---|
+| Unsupported command/flag from stale docs | Check local help. Map syntax below; keep the original policy and intent. Do not repeat guesses or edit policy to suit the binary. |
+| `cannot claim blocked issue` / held bead | Inspect blockers/holder; pick useful other work. No forced claim, reassignment, dependency removal, or reopening a gate to bypass it. An explicitly authorized takeover still needs exact scope and project-compliant evidence. |
+| `database is busy` / lock timeout | Serialize writes, including `sync`; coordinate the shared writer. A bounded `--lock-timeout 30000` can wait, not authorize concurrent destructive work. Re-read exact issue/sync state to learn whether the write landed; don't blindly replay creates or comments. No lock-file deletion or SQL repair. |
+| Nonzero close/update or unclear output | The operation is unconfirmed. Inspect structured errors, exit and fresh state; distinguish rejected transition, claim/policy conflict and partial/postcommit failure. Don't report success or repeat a possibly landed write without reconciling it. |
+| Short text replacement refused | Read current text and the reason. Prefer append/checklist operations. `--force` can bypass destructive-rewrite and blocker guards; it is not the routine solution. Files avoid quoting errors but still replace the whole field. |
+| `--if-unchanged` mismatch (current CLI exits 6) | Another writer changed the bead. Re-read, preserve their work, compose the intended update and use the new `updated_at` only after review; no automatic fresh-timestamp retry. |
+| Refusing stale/empty export | Preserve DB and JSONL, inspect exact-ID coverage and changed relations; reconcile before exporting. Never `--allow-stale` or forced export to silence the guard. |
+| `UNIQUE constraint failed` / import failure | Capture diagnostics and supported read-only doctor/plan output. It does not prove a rebuild is safe. No deleting the DB, SQL edits, or immediate `--rebuild`. |
+| Merge markers / semantic conflict | Stop publication. Preserve both sides and the base plus local DB evidence; use the checklist below. No hand-splicing, one-side checkout, force-newest choice, or fixed-ref assumption. |
+| Missing br / test skipped / interrupted command | Report not run or unknown. An absent binary, zero exit from a wrapper, or a diagnostic recommendation is not a passed workflow gate. |
+
+An error envelope's `retryable: true` is not permission to change dependencies or
+force a claim. Re-evaluate the actual blocker. Transcript entries can duplicate
+the same call/commentary; compare outcomes before counting them as retries.
+
+## Text, claims and graph edits
+
+- Use exact IDs from structured output, not substring greps (`.13` matches `.130`).
+  Parse the actual JSON shape: `create --json` can return an object whereas
+  `show --json` can return a list. A command exiting zero is not proof of the
+  requested status, assignee, or relationships.
+- Append with `--append-notes`, `--add-acceptance` or `br comments add`. For a
+  deliberate replacement, read the whole field and preserve peer edits. When
+  supported, bind an update to the `updated_at` from `show` using `--if-unchanged`.
+  Long text: `--description-file file.md` or `br comments add <id> -f file.md`.
+  Do not interpolate backticks/`$()` into shell text; zsh string variables are
+  not argument arrays. File-based input is quoting hygiene, not merge semantics.
+- Priorities are `0`-`4` / `P0`-`P4`; use locally supported types. Keep acceptance
+  test names and actual command outcomes, never fabricated “Completed” evidence.
+- Search before creating; inspect existing scope, dependencies and acceptance
+  criteria. Merge duplicate *work descriptions* deliberately; do not delete IDs
+  or discard comments/relations to deduplicate. Close a true duplicate with a
+  canonical-ID reason only under the project's closure convention.
+- Announce structural graph writes first and use one writer when required.
+  `br dep add <issue> <depends-on>` means the first is blocked by the second.
+  Verify `br dep cycles` is empty. A parent link does not necessarily implement
+  the required milestone dependency; check the actual graph. Do not remove a
+  blocker merely to claim work.
+- `br epic close-eligible` mutates unless `--dry-run` is supplied. Read the plan
+  and verify each child's evidence; eligibility is not proof of tests/deployment.
+  Accidental closure needs a reviewed reopen and explanation, not silent churn.
+
+## DB/JSONL recovery checklist
+
+Treat this as investigation, **not a universal force-sync recipe**. Preview any
+repair and honor project authorization requirements. `doctor` suggestions do not
+supply consent, and a dry run returning zero is only a plan.
+
+1. Coordinate a single tracker writer. Keep peer writes paused for the reviewed
+   operation; save current Git status/diffs and exact commit identities before
+   changing anything. Preserve unpublished DB work as well as JSONL/base/conflict
+   artifacts with a supported consistent backup or an approved quiesced snapshot.
+   Include DB companions when present; copying a live DB and WAL sequentially is
+   not proof of a consistent backup. Do not open live SQLite directly, delete
+   files, move database families aside, or run a broad doctor repair.
+2. Inspect `br sync --status --json` and read-only diagnostics available in the
+   installed CLI. Hash difference, equal row counts and a clean Git tree are
+   **not proof of equal records**. Compare exact IDs and relevant field values,
+   status, assignee, comments, dependencies, labels and tombstones. Never count
+   closed rows as disposable or compare only `br list` defaults (which may hide
+   closed items). Capture unknown coverage rather than asserting completeness.
+3. **Markers/rebase:** identify the actual Git operation and captured base/ours/
+   incoming commits or index stages. During rebase “ours/theirs” labels differ
+   from ordinary branch intuition; current `origin/main` may have advanced and
+   is not necessarily the incoming side. Export verified stage/ref contents only
+   into **fresh** sidecars, never over existing tracker/evidence. Do not stage a
+   sidecar, silently choose one side, hand-splice JSONL or continue with markers.
+4. Prefer a supported lossless, exact-ID reconciliation **plan** over rebuild.
+   The current CLI offers `br sync --reconcile-additive --json` (read-only by
+   default). Inspect conflicts, target DB/source identity and planned changes.
+   Where authorized and supported, apply only the reviewed plan with `--apply`
+   and its exact `--expect-plan-sha256`; a stale token means stop and re-plan.
+   Do not add `--resolve-source-id`, choose timestamp-newest, or replace a
+   conflicting scalar/relationship without a reviewed semantic decision. If the
+   input has markers, do not feed it to import: first establish complete valid
+   source/base/local state through the project's supported recovery procedure.
+5. A generic `--import-only` or `--merge` is **not an unconditional lossless union**.
+   `--rebuild` removes DB-only entries; `doctor --repair` can also rebuild.
+   `--force`, `--force-db`, `--force-jsonl`, `--allow-stale`, and skipping invalid
+   records can discard data or bypass refusal. Do not turn them into automatic
+   fixes, even after importing a sidecar or checking counts. If no safe supported
+   reconciliation is available, stop and report the conflict with preserved
+   evidence; ask for the exact semantic/repair decision needed.
+6. After an authorized operation, verify the preserved IDs **and** their relevant
+   values/relations, audit/tombstone coverage and final JSONL. Plain import can
+   leave no dirty rows to export: “Nothing to export” does not prove the file
+   contains DB-only records. Check exports themselves before staging, inspect
+   semantic differences, then recheck cycles and finish Git. After completing
+   rebase/pull, import/reconcile as project policy requires before further edits.
+
+## Git handoff and worktrees
+
+Review `git diff -- .beads/issues.jsonl` and staged contents before committing.
+An export may include legitimate peer tracker work: coordinate and describe it;
+do not stage another agent's code or use `git add -A`. Preserve unrelated staged
+paths. Commit only reviewed paths; mixed edits within a path need coordination.
+Check `git status --short .beads/` and verify the tracker commit actually reached
+the remote. Never commit `beads.db`, WAL/SHM files, scratch sidecars or private data.
+
+Do not force cleanup or autostash to make a shared-tree rebase work. Fetch/inspect,
+coordinate or use an appropriate fresh isolated worktree. Confirm its DB routing
+before writes and how claims/exports return to the canonical project. An atomic
+claim in one independent DB cannot prevent a claim in another.
+
+## Stale syntax reference (verify local help)
+
+| Old form | Current equivalent / constraint |
+|---|---|
+| `br prime` | `br ready --json`; guide: `br robot-docs guide` |
+| `br import -i ...` | `br sync --import-only` only after routing/state checks |
+| `update --add-note` | `--append-notes` or `br comments add` |
+| `update <a> --blocks <b>` | `br dep add <b> <a>` |
+| `list --parent` | `br ready --parent ... --json` for ready children, not all children; otherwise inspect supported show/query APIs |
+| `update --status closed` | `br close <id> --reason ...`, with evidence/policy |
+| `doctor --fix` | Alias/support varies; preview available read-only diagnosis and specific repair plan, never run as a harmless check |
+
+## Evidence and tests
+
+[references/evidence.md](references/evidence.md) separates confirmed skill-use
+markers, broad tool history, direct incident context, CLI observations and test
+limits. This is guidance for supported capabilities, not a promise tied only to
+one version string.
+
+Run `bash scripts/test-all.sh --skill br` from the canonical skill repo, or
+`bash br/scripts/self-test.sh` for detail. Tests run real br against fresh retained
+scratch repos only, clear inherited routing overrides and pin fixture DB paths.
+No real project tracker is changed, no files are deleted, and missing br fails
+rather than counting as a skipped live pass. Legacy force/overwrite scenarios
+are hazard demonstrations on fixtures, not recommended recovery steps. Static
+prose checks and independent dry runs supplement CLI tests; none proves all future
+merges lossless. Live project repair is outside test scope.

@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """Replay br failure cases from past sessions against the installed br, in throwaway projects.
 
-Each case is a recorded failure (must fail, optionally with a known message) or a step the
-skill recommends (must succeed). Every run uses fresh directories under a new temporary root;
-nothing is deleted. No project's real .beads is touched.
+Cases check real refusals, supported steps and explicitly labeled legacy hazards.
+Every run uses fresh directories under a retained temporary root with isolated routing;
+nothing is deleted. No project's real .beads is touched. Presence of two distinct issue
+titles in a legacy union fixture does not prove preservation of arbitrary conflicting data.
 """
 import json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(tempfile.mkdtemp(prefix="br-skill-test-"))
-ENV = dict(os.environ, RUST_LOG="error", NO_COLOR="1")
+# Inherited routing overrides must never send these scratch operations to a real DB.
+ENV = {k: v for k, v in os.environ.items()
+       if not k.startswith(("BEADS_", "BR_", "BD_", "GIT_"))}
+ENV.update(RUST_LOG="error", NO_COLOR="1", XDG_CONFIG_HOME=str(ROOT / "config"))
+ENV.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
 passed = failed = 0
 
 
@@ -21,15 +26,18 @@ def check(ok, label, detail=""):
 
 
 def run(cwd, *args, actor=None):
-    argv = ["br", *args] + (["--actor", actor] if actor else [])
-    p = subprocess.run(argv, cwd=cwd, env=ENV, capture_output=True, text=True, timeout=60)
+    cwd = Path(cwd).resolve()
+    if not cwd.is_relative_to(ROOT.resolve()):
+        raise ValueError("refusing a fixture outside the retained test root")
+    argv = ["br", "--db", str(cwd / ".beads/beads.db"), *args] + (["--actor", actor] if actor else [])
+    p = subprocess.run(argv, cwd=cwd, env=ENV, capture_output=True, text=True, timeout=60, check=False)
     return p.returncode, p.stdout + p.stderr
 
 
 def project(name):
     d = ROOT / name
     d.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main", str(d)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(d)], check=True, env=ENV, timeout=30)
     rc, out = run(d, "init", "--prefix", "t")
     assert rc == 0, out
     return d
@@ -53,11 +61,83 @@ def works(label, d, *args, actor=None):
     return out
 
 
+def issue(d, issue_id):
+    rc, out = run(d, "show", issue_id, "--json")
+    assert rc == 0, out
+    rows = json.loads(out)
+    assert isinstance(rows, list) and len(rows) == 1 and rows[0]["id"] == issue_id
+    return rows[0]
+
+
+def recovery_regressions():
+    print("--- Preservation and optimistic concurrency regressions ---")
+    check(not any(k.startswith(("BEADS_", "BR_", "BD_")) for k in ENV),
+          "routing overrides are removed from fixture environment")
+    try:
+        run(ROOT.parent, "where", "--json")
+    except ValueError:
+        check(True, "fixture runner refuses paths outside retained root")
+    else:
+        check(False, "fixture runner refuses paths outside retained root")
+    d = project("preservation")
+    a = create(d, "original issue", "--description", "Original reviewed description with enough detail")
+    b = create(d, "separate prerequisite")
+    works("append first note", d, "update", a, "--append-notes", "first evidence")
+    works("append second note", d, "update", a, "--append-notes", "second evidence")
+    check(issue(d, a)["notes"] == "first evidence\nsecond evidence", "append preserves earlier evidence")
+    old = issue(d, a)["updated_at"]
+    works("peer revision", d, "update", a, "--append-notes", "peer evidence")
+    fails("stale if-unchanged update", d, "update", a, "--title", "stale replacement", "--if-unchanged", old)
+    check(issue(d, a)["title"] == "original issue" and "peer evidence" in issue(d, a)["notes"],
+          "optimistic mismatch preserves peer revision")
+    works("reviewed current update", d, "update", a, "--title", "reviewed issue",
+          "--if-unchanged", issue(d, a)["updated_at"])
+    fails("short destructive description rewrite", d, "update", a, "--description", "x")
+    check(issue(d, a)["description"].startswith("Original reviewed"), "rewrite refusal preserves description")
+    works("relation to prerequisite", d, "dep", "add", a, b)
+    works("preservation comment", d, "comments", "add", a, "retain this comment")
+    works("preservation flush", d, "sync", "--flush-only")
+    family = {p.name: p.read_bytes() for p in (d / ".beads").iterdir()
+              if p.is_file() and (p.name.startswith("beads.db") or p.name.endswith(".jsonl"))}
+    rc, out = run(d, "sync", "--reconcile-additive", "--json")
+    check(rc == 0, "additive reconciliation plan succeeds without apply")
+    plan = json.loads(out)
+    check(bool(plan.get("plan_sha256")), "plan carries a review-bound digest")
+    after = {p.name: p.read_bytes() for p in (d / ".beads").iterdir()
+             if p.is_file() and (p.name.startswith("beads.db") or p.name.endswith(".jsonl"))}
+    check(family == after, "plan leaves DB family, JSONL and base byte-identical")
+    works("change after reviewed plan", d, "update", b, "--append-notes", "new evidence")
+    fails("stale reconciliation plan token", d, "sync", "--reconcile-additive", "--apply",
+          "--expect-plan-sha256", plan["plan_sha256"], "--json")
+    rows = {r["id"]: r for r in map(json.loads, (d / ".beads/issues.jsonl").read_text().splitlines())}
+    check({a, b}.issubset(rows)
+          and any(dep["issue_id"] == a and dep["depends_on_id"] == b and dep["type"] == "blocks"
+                  for dep in rows[a].get("dependencies", []))
+          and any(comment["issue_id"] == a and comment["text"] == "retain this comment"
+                  for comment in rows[a].get("comments", []))
+          and rows[a]["notes"] == "first evidence\nsecond evidence\npeer evidence",
+          "export preserves exact IDs, comment text, dependency direction and notes")
+    clash = project("same-id-conflict")
+    shared = create(clash, "shared original")
+    works("shared base flush", clash, "sync", "--flush-only")
+    source_path = clash / ".beads/issues.jsonl"
+    source_rows = list(map(json.loads, source_path.read_text().splitlines()))
+    works("local edit without export", clash, "update", shared, "--title", "local intended title", "--no-auto-flush")
+    local = issue(clash, shared)
+    for row in source_rows:
+        if row["id"] == shared:
+            row["title"] = "incoming competing title"
+            row["updated_at"] = local["updated_at"]
+    source_path.write_text("".join(json.dumps(row) + "\n" for row in source_rows))
+    fails("same-ID equal-timestamp semantic conflict", clash, "sync", "--merge")
+    check("incoming competing title" in source_path.read_text(), "merge refusal preserves incoming evidence")
+
+
 def main():
     if not shutil.which("br"):
-        print("  SKIP  br not on PATH\nPASS: 0 pass, 0 fail, 1 skip")
-        return 0
-    print(f"=== br skill corpus ({subprocess.run(['br', '--version'], capture_output=True, text=True).stdout.strip()}) ===")
+        print("FAIL: br not on PATH; live corpus NOT RUN")
+        return 1
+    print(f"=== br skill corpus ({subprocess.run(['br', '--version'], capture_output=True, text=True, timeout=15, check=False).stdout.strip()}) ===")
     print(f"  (fixtures retained under {ROOT})")
 
     print("--- Commands from outdated AGENTS.md files ---")
@@ -96,7 +176,7 @@ def main():
     works("claim an unblocked issue", d, "update", blocker, "--claim", actor="AgentA")
     fails("second agent claims a held issue", d, "update", blocker, "--claim", actor="AgentB")
     rc, out = run(d, "show", blocker, "--json")
-    check('"AgentA"' in out, "the first claim survives the second attempt")
+    check(issue(d, blocker).get("assignee") == "AgentA", "the first claim survives the second attempt")
     # The hazard behind ~22 logged force-claims: --force rewrites a live claim without warning.
     # Demonstrated on a scratch issue so the skill's "never --force a claim" rule stays grounded.
     victim = create(d, "held by AgentA")
@@ -104,7 +184,7 @@ def main():
     rc, out = run(d, "update", victim, "--status", "in_progress", "--assignee", "AgentB", "--force",
                   actor="AgentB")
     rc2, shown = run(d, "show", victim, "--json")
-    check(rc == 0 and '"AgentB"' in shown,
+    check(rc == 0 and issue(d, victim).get("assignee") == "AgentB",
           "HAZARD confirmed: --force silently replaces another agent's live claim", f"rc={rc}")
     works("return a claim (status open, no assignee)", d, "update", blocker, "--status", "open",
           "--assignee", "", actor="AgentA")
@@ -139,9 +219,8 @@ def main():
     rc, out = run(local, "sync", "--help")
     check("--merge" in out, "sync --merge exists for JSONL conflicts")
 
-    print("--- issues.jsonl conflict recipe ---")
-    # Our DB has a local bead; the incoming side's JSONL lacks it. The skill's recipe: put the
-    # incoming JSONL in place, import, then flush. The import must MERGE (keep our DB-only bead).
+    print("--- Legacy distinct-ID conflict hazard demonstration (not a recovery recipe) ---")
+    # Historical fixture: presence of two distinct titles does not prove lossless semantics.
     theirs = project("conflict-theirs")
     create(theirs, "their bead")
     works("their flush", theirs, "sync", "--flush-only")
@@ -171,23 +250,25 @@ def main():
           contains="conflict markers")
     fails("merge while issues.jsonl has conflict markers", conflicted, "sync", "--merge",
           contains="conflict markers")
-    # The recipe (every step allowed by dcg; br needs a .jsonl name, and *.tmp is refused):
+    # Legacy forced export on a scratch fixture only; never a permission precedent:
     # the incoming version to a sidecar file that is never staged
     # (`git show <ref>:.beads/issues.jsonl > .beads/issues.incoming.jsonl`), import it, then let
-    # br regenerate issues.jsonl from the DB, which now holds both sides.
+    # br regenerates the distinct-ID fixture; no claim about arbitrary semantic conflicts.
     (conflicted / ".beads" / "issues.incoming.jsonl").write_text(other)
-    rc, out = subprocess.run(["br", "sync", "--import-only"], cwd=conflicted, capture_output=True, text=True,
-                             env=dict(ENV, BEADS_JSONL=str(conflicted / ".beads" / "issues.incoming.jsonl")),
-                             timeout=60).returncode, ""
-    check(rc == 0, "works: BEADS_JSONL=.beads/issues.incoming.jsonl br sync --import-only")
-    works("br sync --flush-only --force regenerates issues.jsonl from the DB", conflicted,
+    imported = subprocess.run(["br", "--db", str(conflicted / ".beads/beads.db"), "sync", "--import-only"],
+                              cwd=conflicted, capture_output=True, text=True,
+                              env=dict(ENV, BEADS_JSONL=str(conflicted / ".beads/issues.incoming.jsonl")),
+                              timeout=60, check=False)
+    check(imported.returncode == 0, "legacy fixture only: sidecar import",
+          (imported.stdout + imported.stderr).strip()[:160])
+    works("legacy fixture only: forced export of known distinct IDs", conflicted,
           "sync", "--flush-only", "--force")
     exported = (conflicted / ".beads" / "issues.jsonl").read_text()
     rc, listed = run(conflicted, "list", "--json")
     check("<<<<<<<" not in exported and "our unpushed bead" in exported and "their bead" in exported
           and "our unpushed bead" in listed and "their bead" in listed,
-          "after the recipe: no markers, both sides in the JSONL and the DB")
-    # Without markers (for example after a clean merge of two exports), one command is enough.
+          "legacy distinct-ID fixture has both titles (not proof of safe recovery)")
+    # Narrow historical marker-free fixture; success is not general semantic preservation.
     works("br sync --merge on a marker-free incoming issues.jsonl", ours, "sync", "--merge")
     exported = (ours / ".beads" / "issues.jsonl").read_text()
     check("our unpushed bead" in exported and "their bead" in exported,
@@ -202,17 +283,19 @@ def main():
     wid = create(main_repo, "tracked issue")
     works("flush before commit", main_repo, "sync", "--flush-only")
     subprocess.run(["git", "-C", str(main_repo), "add", ".beads/issues.jsonl", ".beads/config.yaml",
-                    ".beads/metadata.json", ".beads/.gitignore"], check=True)
+                    ".beads/metadata.json", ".beads/.gitignore"], check=True, env=ENV, timeout=30)
     subprocess.run(["git", "-C", str(main_repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
-                    "commit", "-qm", "beads"], check=True)
+                    "commit", "-qm", "beads"], check=True, env=ENV, timeout=30)
     wt = ROOT / "wt-checkout"
-    subprocess.run(["git", "-C", str(main_repo), "worktree", "add", "-q", str(wt), "HEAD"], check=True)
+    subprocess.run(["git", "-C", str(main_repo), "worktree", "add", "-q", str(wt), "HEAD"],
+                   check=True, env=ENV, timeout=30)
     rc, out = run(wt, "show", wid, "--json")
     print(f"  INFO  br show in a fresh worktree before importing: rc={rc}")
     works("import in a fresh worktree", wt, "sync", "--import-only")
     rc, out = run(wt, "show", wid, "--json")
     check(rc == 0 and "tracked issue" in out, "the issue is visible in the worktree after importing")
 
+    recovery_regressions()
     print(f"PASS: {passed} pass, {failed} fail, 0 skip")
     return 1 if failed else 0
 
