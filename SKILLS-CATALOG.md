@@ -78,6 +78,7 @@ Imported third-party design skills. Both target frontend work; pick by job: **im
 | Skill | When to use |
 |-------|-------------|
 | **agent-mail-ops** | Agent Mail incidents in ACFS (`AM is down`, disconnected MCP, `health_check` red / corrupt SQLite, `agent-mail.service`, rogue `mcp-agent-mail serve`, endpoint drift away from `127.0.0.1:8765`, failed nightly `am` update, archive rebuild) |
+| **dcg** | A Bash command was "BLOCKED by dcg" (Destructive Command Guard), or before cleanup, `rm -rf`, moving folders out of `~`, discarding git changes, force-push/branch delete, or redirects to variable paths: fix by rule, approval protocol, forbidden workarounds, a tested corpus of past blocks |
 | **shared-skill-authoring** | Create or update shared Claude/Codex skills from `~/src/acfs-agent-skills`, run drift audits, and install via the canonical symlink workflow |
 | **ntm** | Multi-agent tmux sessions via `ntm` CLI (spawn, attach, broadcast, session management) |
 | **cass** | Search past Claude/Codex/Gemini sessions via `cass` CLI (recall prior work, search history) |
