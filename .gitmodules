@@ -1,0 +1,3 @@
+[submodule ".repos/rusty-jev"]
+	path = .repos/rusty-jev
+	url = https://github.com/JordanChoo/rusty-jev.git

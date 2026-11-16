@@ -33,7 +33,7 @@ Edit a skill once in the repo; both harnesses see it instantly.
 ## New machine bootstrap
 
 ```bash
-gh repo clone <owner>/acfs-agent-skills ~/src/acfs-agent-skills
+gh repo clone <owner>/acfs-agent-skills ~/src/acfs-agent-skills -- --recurse-submodules
 cd ~/src/acfs-agent-skills
 bash scripts/install.sh
 ```
@@ -54,23 +54,28 @@ cp -R ~/.codex/skills/rch/. rch/ && git add rch && git commit -m "rch: refresh s
 
 ## Skills that live in their project's repo
 
-A skill that documents one project can live in that project's repo, next to the code it
-describes, so a change to the code and its skill land in one commit. Here its folder is a
-symlink to the project's copy, and everything else works unchanged: `install.sh` links the
-harnesses to `<repo>/<name>` as usual, and `install.sh` and `audit-drift.sh` compare fully
-resolved paths, so the extra hop is not drift.
+A skill that documents one project can live in that project's GitHub repo, next to the code it
+describes, so a change to the code and its skill land in one commit. This repo includes that
+project as a git submodule under `.repos/` (hidden, so the skill scripts never mistake it for a
+skill) and tracks a relative symlink `<name> → .repos/<project>/skills/<name>`. Everything else
+works unchanged: `install.sh` links the harnesses to `<repo>/<name>` as usual, and `install.sh`
+and `audit-drift.sh` compare fully resolved paths, so the extra hop is not drift.
 
-| Skill | Lives at |
-| --- | --- |
-| `rusty-jev` | `/data/projects/rusty-jev/skills/rusty-jev` (repo `JordanChoo/rusty-jev`) |
+| Skill | Submodule | Source |
+| --- | --- | --- |
+| `rusty-jev` | `.repos/rusty-jev` | `JordanChoo/rusty-jev`, `skills/rusty-jev/` |
 
-Edit such a skill in its project repo and commit it there, not here. Only the symlink and the
-catalog row are tracked in this repo. On a machine without the project checked out at that
-path, the link dangles and the skill is simply not installed.
-
-To add one: put the skill at `<project>/skills/<name>/`, then here run
-`ln -s <project>/skills/<name> <name>`, add a catalog row and a row to the table above, and run
-`bash scripts/install.sh`.
+- **Clone with submodules:** `git clone --recurse-submodules ...`, or run
+  `git submodule update --init` in an existing clone. Without it the link dangles and the skill
+  is simply not installed.
+- **Edit the skill in its project repo** and push it there. Never edit inside `.repos/`: that is
+  a pinned checkout.
+- **Pick up a pushed change here:**
+  `git submodule update --remote .repos/<project>`, run the skill's self-test, then commit and
+  push the bump (`git add .repos/<project>`).
+- **Add one:** put the skill at `<project>/skills/<name>/`, then
+  `git submodule add <url> .repos/<project>`, `ln -s .repos/<project>/skills/<name> <name>`,
+  add a catalog row and a row to the table above, and run `bash scripts/install.sh`.
 
 ## Daily workflow
 
