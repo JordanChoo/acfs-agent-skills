@@ -33,9 +33,9 @@ for f in \
 done
 echo
 
-# F1 — bad usage rejected
-echo "[F1] 'cass search robot \"q\"' must fail with usage error"
-out=$(cass search robot "hello" 2>&1; echo "EXIT=$?")
+# F1 — genuinely invalid usage rejected. New cass auto-corrects positional words.
+echo "[F1] unsupported search flag must fail with usage error"
+out=$(cass search "hello" --cass-skill-invalid-flag --robot 2>&1; echo "EXIT=$?")
 ec=$(echo "$out" | tail -1 | grep -oE 'EXIT=[0-9]+' | cut -d= -f2)
 if [ "$ec" -eq 2 ]; then
   ok "exit code 2 (usage)"
@@ -143,6 +143,13 @@ fi
 echo
 
 # === Summary ===
+echo "[Codex default/isolated home coverage helper]"
+if python3 "$SKILL_DIR/scripts/test_index_codex_homes.py"; then
+  ok "Codex home discovery, checkpoint and verification regressions"
+else
+  bad "Codex home coverage helper regressions"
+fi
+
 echo "=== Summary ==="
 echo "PASS: $PASS    FAIL: $FAIL    SKIP: $SKIP"
 [ "$FAIL" -eq 0 ] && exit 0 || exit 2

@@ -13,6 +13,28 @@ description: >-
 
 # cass — Cross Agent Session Search
 
+## Codex homes on this VPS
+
+The Codex launcher isolates panes under `~/.codex-instances/<pane>`, beginning
+2026-05-24. CASS's default detector selects just the current `CODEX_HOME` (or
+`~/.codex`), so a healthy index can miss other homes. Check `cass diag --json`
+and compare all session roots rather than assuming post-May silence means no work.
+
+`scripts/index_codex_homes.py` previews coverage; `--apply` incrementally indexes
+changed rollout files in the default home and every existing isolated home, with
+each home's proper `CODEX_HOME` and the same local source identity. It discovers
+new homes each run, retains diagnostics and caches only confirmed unchanged,
+fully indexed batches. It never moves source logs, rewrites the launcher, uses
+`--full`/force, or disables active-writer protection. Open/deferred files remain
+pending. Changing to a named source solely to backfill can duplicate identities.
+
+The user service `cass-codex-homes.service` and its timer run the helper every ten
+minutes on this VPS. Check `systemctl --user status cass-codex-homes.timer` and
+`journalctl --user -u cass-codex-homes.service` for operation; the job uses
+`~/.local/state/cass-codex-homes/` for private progress and retained diagnostics.
+Offline helper tests: `python3 cass/scripts/test_index_codex_homes.py` from the
+canonical shared-skill repo. A deferred live session is not an ingested session.
+
 > **Premise:** `cass` indexes your local AI coding-agent session files (`~/.claude/projects`, `~/.codex/sessions`, etc.) into SQLite + Tantivy. The CLI is robot-friendly: every command has a `--json`/`--robot` mode and a stable schema. **Use the CLI; do not query the SQLite DB directly** — the schema isn't a stable contract and you'll miss ranking, snippet generation, and the ergonomics that already exist.
 
 ## When to reach for this skill (active-project use)
@@ -265,7 +287,9 @@ These came from real session logs. The skill exists to keep them from happening 
 
 ### A2. `cass search robot "<query>"`
 **Symptom:** `Could not parse arguments` (exit 2).
-**Cause:** `robot` is not a subcommand. The flag is `--robot` (alias of `--json`).
+**Cause:** `robot` is not a subcommand. Newer CASS may auto-correct the words into
+a query containing "robot", which still isn't the requested output mode.
+The flag is `--robot` (alias of `--json`).
 **Correct:** `cass search "<query>" --robot`.
 
 ### A3. Ambiguous time arguments

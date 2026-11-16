@@ -2,6 +2,49 @@
 
 Each test maps to a failure pattern observed in CASS sessions or in the prior session that motivated this skill.
 
+## Default and isolated Codex homes (2026-11-16)
+
+The shared self-test also runs eight offline tests in
+`scripts/test_index_codex_homes.py`: default/isolated/future-home discovery,
+changed-file selection, exact targeted argv, archive-bound checkpoints, refusal
+to cache partial/deferred/failed batches, complete provider-scoped timeline
+coverage, bounded retries exclusively for an explicit index-busy refusal, and
+retaining malformed command output as a failed operation.
+Tests retain temporary fixtures and never run an index or mutate real history.
+
+The operational helper is `scripts/index_codex_homes.py` (preview; add `--apply`
+to index). The host's user service supplies a 256 MiB modern-rollout read budget
+via supported `CASS_CODEX_MAX_SOURCE_BYTES`, sufficient for the observed 142 MB
+rollout that the 100 MiB default rejected. Active-writer protection remains on.
+Timer units live in `~/.config/systemd/user/cass-codex-homes.{service,timer}`;
+the enabled timer discovers all homes again every ten minutes.
+
+Live verification compares `cass timeline --agent codex --since 2000-01-01
+--group-by none --json` paths with source paths. `cass sessions --limit 100000`
+was too slow for the job's deadline, so it is deliberately not used. A path that
+is already archived can produce a successful zero-addition index; unknown paths
+must be present in the post-index archive before progress is cached.
+
+The legacy invalid-usage test now passes a genuinely unsupported flag. Current
+CASS auto-corrects `cass search robot hello` instead of rejecting it; testing for
+that old rejection would fail on a supported newer CLI.
+
+UBS 5.5.26 scanned the two helper Python files and shell runner: exit 0, no
+criticals. Reviewed JSON-parse warnings fail closed (malformed archive/checkpoint
+data aborts the job; malformed test data fails the test). Missing-return and
+unreachable-code notes are heuristic: classifier branches return or raise, the
+bounded retry loop returns a response by its final attempt, and tests return
+None intentionally. No scanner rules were suppressed. Raw reports are retained
+under `/data/tmp/ubs-skill-6bev2011/`.
+
+Live acceptance on 2026-11-16: `cass-codex-homes.service` exited successfully,
+covering 43 homes. Exact source-path comparison found 391 of 413 rollout files
+archived (up from 300), zero duplicate session rows, and all 22 remaining files
+held writable by Codex processes. There were no unexplained missing sources. The
+142 MB rollout was indexed under the explicit 256 MiB budget. The user timer was
+enabled and its next scheduled run verified. Open files remain deferred until
+Codex closes their handles; no processes were killed or source files moved.
+
 Run via:
 ```bash
 bash "$(dirname "$(realpath "$0" 2>/dev/null || echo .)")/scripts/self-test.sh"
