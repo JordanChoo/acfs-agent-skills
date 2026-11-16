@@ -1,138 +1,37 @@
-# UBS False-Positive Catalog
+# UBS triage: examples are not automatic exemptions
 
-Detailed list of known false positives observed in real agent sessions, with examples and suppression strategies.
+A finding is a hypothesis. Read the code, its execution context, and the exact
+rule/location. Preserve correct behavior and meaningful tests.
 
----
+| Pattern from sessions | Verify before dismissing | Appropriate response |
+|---|---|---|
+| Rust `assert!`, `expect`, direct indexing | Is it inside a test function or an inline `#[cfg(test)]` module? Is the assertion testing the intended invariant? | Keep intentional test failures. Production input/provider-response panics need investigation. Do not rewrite valid assertions merely to reduce counts. |
+| Indexing after bounds checks | Does the guard dominate every access, including arithmetic and early-return paths? Can mutation invalidate it? | Document the concrete bound; fix a missing guard, not the scanner's wording. |
+| Cloning names inside a loop | Does the map need an owned key? Is the loop bounded? | Retain necessary ownership; optimize only for an actual cost/problem. |
+| `lib/`, `dist/`, `build/` warnings | Is this directory actually generated, rather than handwritten Rust/JS library source? Can you map it to checked source? | Narrowly exclude verified generated/vendor output, not every directory named `lib`. |
+| `__proto__`, fake keys in tests | Is the value intentionally synthetic, and is no real credential embedded or used against a live service? | Keep attack fixtures that prove defenses. A secret in a test is still a secret. |
+| `page.$eval` / `$$eval` | Is it the framework's DOM-evaluation API? What crosses the trust boundary into the browser? | Do not equate its name with global `eval`; still inspect passed code/data. |
+| `process.env` in backend code | Does it remain server-only? Is the value logged, returned, serialized, or bundled into a browser asset? | A read alone is not proof of a leak; actual downstream exposure is a bug. |
+| JSX props reported as assignments | Is the parser mistaking JSX attribute syntax for an assignment? | Triage that rule/location; do not exclude all `.tsx`. |
+| `!= null` | Is a dual null/undefined guard intentional? | Preserve it. Replacing it with `!== null` changes behavior. |
+| Promise warnings in browser/load-test scripts | Is the API truly synchronous (e.g. a particular k6 API), and are async failures otherwise handled? | Verify API semantics before dismissal; legitimate unhandled parsing/lifecycle failures still need fixes. |
 
-## Category 1: Compiled JavaScript Output
+## Noise-reduction order
 
-**ruleIds:** `js.loose-equality`, `js.eval-call`, various
-**Trigger:** UBS scans `functions/lib/`, `dist/`, `build/` -- directories containing TypeScript compiler output.
-**Example findings:**
-- 12x "Loose equality `==` instead of `===`" in `__createBinding` helper (`mod != null`)
-- `eval` in bundled polyfills
+1. Save the raw scan. Count by rule and path; prioritize changed production code.
+2. Sample each noisy rule/context, then inspect all potentially dangerous cases.
+   Counts and samples are navigation aids, not proof that remaining matches are safe.
+3. Record why a finding is intentional, unreachable, generated, guarded, or a
+   scanner limitation. Include rule and location where practical.
+4. A supplemental Rust `--exclude-tests` scan can help locate production findings
+   when supported. It cannot replace required coverage of tests or helpers.
+5. Use `.ubsignore` only for justified scope boundaries. Keep explanations on their
+   own comment lines; do not assume trailing comments or negation/glob syntax work
+   like Git's. Test the actual local module's matching behavior.
+6. For inline `ubs:ignore`, prove the original diagnostic is suppressed and a nearby
+   real finding is still detected. Suppression is analyzer/version-specific. If it
+   is ineffective, keep a documented triage instead of widening the exclusion.
 
-**Why false:** These are compiler-generated patterns. The source TypeScript is correct; the emitted JS uses idiomatic patterns the compiler produces.
-
-**Suppression:** Add to `.ubsignore`:
-```
-functions/lib/
-dist/
-build/
-out/
-```
-
----
-
-## Category 2: Test Fixtures & Intentional Payloads
-
-**ruleIds:** `js.prototype-pollution`, `js.hardcoded-secret`, `js.sensitive-data-logging`
-**Trigger:** UBS scans test files containing intentional attack payloads and fake credentials.
-**Example findings:**
-- 2x "Prototype pollution via `__proto__`" in `attack-helpers.ts`, `piiScrubber.test.ts`
-- 78x "Hardcoded credentials" in test files (`test-password-123`, `fake-api-key-xxx`)
-- 4x "Sensitive data logging" in scripts logging token counts (not actual secrets)
-
-**Why false:** Test fixtures intentionally contain these patterns to test defenses.
-
-**Suppression:** Add test directories to `.ubsignore` or accept these findings as part of the test suite. Inline `// ubs:ignore test fixture` on specific lines if the test file also has real findings.
-
----
-
-## Category 3: Playwright `$$eval` / `$eval`
-
-**ruleIds:** `js.eval-call`
-**Trigger:** Playwright test code uses `page.$$eval('selector', fn)` and `page.$eval('selector', fn)`.
-**Example:** `const texts = await page.$$eval('.item', els => els.map(e => e.textContent))`
-
-**Why false:** Playwright's `$$eval` is a remote DOM query API, not `eval()`. The function runs in the browser context as a controlled query, not arbitrary code execution.
-
-**Suppression:** Add to `.ubsignore`:
-```
-# Playwright scripts use $$eval (not eval)
-apps/web/research_*.mjs
-tests/e2e/
-playwright.config.ts
-```
-
----
-
-## Category 4: TSX JSX Attribute Parsing
-
-**ruleIds:** Various assignment-related rules
-**Trigger:** UBS JS module mis-parses JSX/TSX prop syntax as global variable assignments.
-**Example:** `<Component value={someVar} />` flagged as assignment to `value`.
-
-**Why false:** JSX attributes are not global assignments. This is a parser limitation in UBS's JS module.
-
-**Suppression:** Add `*.tsx` to `.ubsignore` until the upstream parser is fixed:
-```
-*.tsx
-```
-
----
-
-## Category 5: Server-Only `process.env`
-
-**ruleIds:** `security.env-in-client`
-**Trigger:** UBS flags `process.env.VARIABLE` reads as "environment variable exposed to client."
-**Example findings:**
-- 59x `process.env.API_KEY` in Firebase Functions source (`functions/src/`)
-- `process.env.NODE_ENV` in backend middleware
-
-**Why false:** Node.js Firebase Functions run server-side only. Vite/webpack never bundles them to the client. UBS has no awareness of bundler configuration.
-
-**Suppression:** Inline suppression with consistent comment:
-```typescript
-const apiKey = process.env.API_KEY  // ubs:ignore server-only env access
-```
-
-Or exclude entire backend directories:
-```
-functions/src/          # if you don't need UBS on backend at all
-```
-
-The inline approach is preferred because it preserves scanning for other rules (eval, prototype pollution, etc.) in backend code.
-
----
-
-## Category 6: Loose Equality in Shell/Markdown
-
-**ruleIds:** `js.loose-equality` (misfire)
-**Trigger:** Shell scripts or markdown docs containing `== "string"` comparisons get scanned by the JS module.
-**Example:** `if [ "$status" == "failed" ]` in a runbook `.md` file.
-
-**Why false:** Not JavaScript at all.
-
-**Suppression:** Add non-code file types to `.ubsignore`:
-```
-*.md
-*.sh
-docs/
-```
-
----
-
-## Triage Decision Matrix
-
-```
-Is the file in lib/, dist/, build/, node_modules/?
-  YES -> False positive (compiled/vendored). Skip.
-
-Is the file a test file (*.test.*, *.spec.*, test-helpers.*)?
-  YES -> Check if the finding is about test payloads (fake creds, attack strings).
-    Payloads -> False positive. Skip.
-    Actual test logic bug -> Real finding. Fix.
-
-Is the ruleId "security.env-in-client" in backend code?
-  YES -> False positive (server-only). Suppress inline.
-
-Is the ruleId "js.eval-call" in Playwright code?
-  YES -> False positive ($$eval API). Skip.
-
-Is the file *.tsx and the finding is about prop assignments?
-  YES -> False positive (parser limitation). Skip.
-
-None of the above?
-  -> Read the code. It's probably a real finding.
-```
+An error label does not prove a bug. A test filename, generated-looking path,
+zero exit, or unchanged warning count does not prove safety. Complete the normal
+compiler, test, security and project-specific gates independently.

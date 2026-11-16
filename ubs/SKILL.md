@@ -1,525 +1,165 @@
 ---
 name: ubs
 description: >-
-  Run UBS (Ultimate Bug Scanner) on changed files before committing.
-  Use when: pre-commit quality gate, the user mentions "ubs", "bug scan",
-  "security scan", or when AGENTS.md / CLAUDE.md instructs agents to run
-  UBS before committing. Handles scoping, output parsing, false-positive
-  triage, .ubsignore management, and the fix-rerun loop.
+  Run and interpret Ultimate Bug Scanner (UBS) for a bug/security scan or a
+  repository-required pre-commit gate. Use when the user names UBS or asks to
+  triage scanner findings, scan changed files, or configure .ubsignore. Handles
+  exact scope, real exit codes, incomplete coverage, Rust scan limits, and false
+  positives without weakening correct code or tests.
 ---
 
-<!-- TOC: TL;DR | Decision Tree | Preflight | Command Reference | Recipes | Output Parsing | False-Positive Triage | .ubsignore | Anti-Patterns | Troubleshooting | Provenance -->
+# UBS: capture once, verify coverage, then triage
 
-# ubs -- Ultimate Bug Scanner
+UBS is a heuristic scanner, not a proof that code is safe and not a substitute for
+compiler, test, dependency, or repository-specific gates. Read the project's
+AGENTS.md/CLAUDE.md first; its toolchain pins and build-location rules take precedence.
 
-> **Premise:** `ubs` is a multi-language static analysis meta-runner at `~/.local/bin/ubs`. It orchestrates ast-grep, ripgrep, and per-language modules to flag security issues, null-safety bugs, resource leaks, and code smells. It is **not** a linter replacement -- it catches classes of bugs that linters miss (eval injection, prototype pollution, stale closures, phantom callables). Run it on **changed files only**, read its output with the right format, triage false positives, fix real issues, and move on.
+## Happy path
 
-## TL;DR -- fastest correct path
-
-```bash
-# 1. Scope to changed files (< 5s, manageable output)
-ubs --format=sarif --quiet $(git diff --name-only HEAD) 2>/dev/null
-
-# 2. Parse actionable findings
-... | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-for run in d.get('runs',[]):
-  for r in run.get('results',[]):
-    if r.get('level') in ('error','warning'):
-      loc=r.get('locations',[{}])[0].get('physicalLocation',{})
-      f=loc.get('artifactLocation',{}).get('uri','')
-      ln=loc.get('region',{}).get('startLine','?')
-      print(f\"{r['level']:8s} {r.get('ruleId','?'):30s} {f}:{ln}\")
-"
-
-# 3. Fix real issues, then verify
-ubs --format=sarif --quiet <fixed-files> 2>/dev/null
-# Exit 0 = clean. Exit 1 = findings remain.
-```
-
-If you only do those three steps, you'll be right 90% of the time.
-
----
-
-## Decision Tree
-
-```
-What needs scanning?
-|
-+-- Pre-commit (staged files)
-|   -> Recipe #1: ubs --staged
-|   IMPORTANT: stage files FIRST, then run --staged
-|
-+-- Quick check on files I just edited
-|   -> ubs --format=sarif --quiet file1.ts file2.py
-|
-+-- Changed files vs HEAD (not yet staged)
-|   -> Recipe #2: ubs --diff
-|
-+-- Full project scan (rare -- only for initial audit)
-|   -> Recipe #3: ubs --format=sarif --quiet --ci .
-|   WARNING: output will be huge. Use SARIF + jq to filter.
-|
-+-- Triage a specific UBS finding
-|   -> Read the file:line, check context, classify per $$False-Positive Triage
-|
-+-- Suppress known false positives
-|   -> .ubsignore for directories, inline // ubs:ignore for lines
-```
-
----
-
-## Preflight
+1. Work from the project root. Inspect `git status --short`; identify the files you
+   own. Check `command -v ubs` and `ubs --version` once; if missing, use the approved
+   tool-install workflow rather than improvising an installer. Do not stage
+   another agent's work merely to make `--staged` work.
+2. Use the bundled runner. Set `UBS_SKILL` to the directory containing this file
+   (the shared installation is `~/.codex/skills/ubs` or `~/.claude/skills/ubs`).
 
 ```bash
-command -v ubs >/dev/null || { echo "UBS not installed"; exit 1; }
-ubs --version  # expect: UBS Meta-Runner v5.x.x
+# Specific files: safest scope in a shared working tree; filenames are separate arguments.
+python3 "$UBS_SKILL/scripts/scan.py" src/worker.rs 'tests/file with spaces.rs'
+
+# All working-tree changes PLUS untracked files; deleted files are omitted.
+python3 "$UBS_SKILL/scripts/scan.py" --scope changed
+
+# Already staged files only. Refuses partially staged files rather than silently
+# claiming working-tree results cover different index contents.
+python3 "$UBS_SKILL/scripts/scan.py" --scope staged
 ```
 
-If `ubs` is not found, it's installed via:
-```bash
-curl -sSL https://raw.githubusercontent.com/Dicklesworthstone/ultimate_bug_scanner/main/install.sh | bash
-```
+3. Wait for the actual process completion. The runner prints a bounded JSON summary
+   and the unique artifact directory. Read `record.json`, `stderr.log`,
+   `summary.json`, and `findings.sarif` there as needed. It preserves the scanner's
+   real exit code, selected filenames, hashes for file scopes, and analysis options.
+   It never stages, commits, invokes install/update/repair commands, or deletes files.
+4. Check **coverage and findings separately** using the table below. Review warnings
+   even when UBS exits zero. Inspect changed unsupported files manually.
+5. Fix confirmed bugs; rerun the same scope after changes. Keep the raw artifacts
+   and record the final revision/scope, exit code, coverage limits, and triage.
+   If source changed during the scan, the runner refuses that result.
 
-Check module health:
-```bash
-ubs doctor        # validates cached modules, checksums
-ubs doctor --fix  # redownload corrupted modules
-```
+The runner requires Python 3.9+ and the current UBS `--report-json` coverage
+summary. An older or missing report yields `coverage_unverified`, not a fabricated
+pass. Use the raw recipe below if necessary; document the coverage limitation.
+Do not install/upgrade tools or change project policy just to make a gate green.
 
----
+## Outcome is not just an exit code
 
-## Command Reference
+Verified with UBS 5.5.26; inspect `ubs --version`, `ubs --help` and
+`ubs robot-docs exit-codes` when local behavior differs.
 
-### Scanning modes (pick ONE)
-
-| Mode | Command | When to use |
-|---|---|---|
-| Specific files | `ubs file1.ts file2.py` | Changed 1-5 files (fastest) |
-| Staged files | `ubs --staged` | Pre-commit gate |
-| Modified files | `ubs --diff` | Quick check vs HEAD |
-| Whole project | `ubs .` | Initial audit only |
-| File list | `ubs --files=a.js,b.py .` | Explicit file set |
-
-### Output formats
-
-| Format | Flag | Has file:line? | Agent-friendly? | Use for |
-|---|---|---|---|---|
-| **SARIF** | `--format=sarif` | Yes (full location) | Yes | **Default for agents** -- structured, parseable, has file:line:col |
-| JSON | `--format=json` | No (counts only) | Partial | Quick pass/fail check via `.totals` |
-| Text | (default) | Partial (embedded JSON lines) | No | Human reading only |
-| TOON | `--format=toon` | Yes | Yes | Token-efficient (~50% smaller than JSON) |
-| JSONL | `--format=jsonl` | Varies | Partial | Streaming |
-
-**Always use `--format=sarif` for agent work.** JSON lacks file:line locations. Text output is huge and inconsistent (banner art + embedded JSON lines). SARIF gives you ruleId, severity, file, line, column in a standard schema.
-
-### Useful flags
-
-| Flag | Effect |
+| Evidence | Interpretation and action |
 |---|---|
-| `--quiet` / `-q` | Suppress banner art and progress noise |
-| `--ci` | CI mode: stable timestamps, no color |
-| `--only=js,python` | Restrict to specific languages (3-5x faster) |
-| `--exclude=csharp` | Skip specific languages |
-| `--fail-on-warning` | Exit non-zero on warnings too (not just criticals) |
-| `--ignore-file=PATH` | Use a specific ignore file |
-| `--skip-size-check` | Bypass the 1GB directory size limit |
-| `--report-json=FILE` | Write summary to file |
-| `--jobs=N` | Parallelism hint |
+| Exit 0, status `ok`, scanners ran | No criticals; **warnings may remain** unless warning failures were enabled. Triage SARIF and totals. |
+| Exit 1 | Criticals, or warnings under `--fail-on-warning`. Investigate; do not discard the exit status. |
+| Exit 2 / signal / status `partial`, `error`, or `refused` / failed modules | Incomplete or failed analysis. Read stderr and coverage metadata. Not a pass, even if available findings are empty. |
+| Exit 3 / zero scanned files / no supported languages | Nothing checked. Report `not scanned`; manually review unsupported changes. |
+| Empty/malformed SARIF, missing summary, unknown schema | Missing evidence. Report incomplete/unverified; never substitute zero findings. |
+| Empty selected scope | `not run`; do not invoke bare `ubs` and accidentally scan the repository. |
 
-### Environment variables
+Older UBS versions returned 0 for unsupported-only scopes; `UBS_ALLOW_NO_SCAN`
+and `UBS_ALLOW_PARTIAL` can also weaken exits. The runner disables those two
+permissive settings and still checks coverage metadata. A completed scan with
+warnings or unsupported-file candidates is `review_required`, not “clean.”
+A file count is not proof that every requested file or analysis ran: inspect
+ignore rules, selected languages, and per-scanner limitations.
 
-| Var | Effect |
+## Choose the analysis deliberately
+
+| Situation | Scope / next step |
 |---|---|
-| `UBS_MAX_DIR_SIZE_MB=0` | Disable directory size guard (needed for repos > 1GB) |
-| `UBS_OUTPUT_FORMAT=sarif` | Default output format |
-| `UBS_SKIP_SIZE_CHECK=1` | Same as `--skip-size-check` |
+| One to five edited source files | Explicit relative paths; do not dump a full-repo report into chat. |
+| New untracked source | Explicit paths or the runner's `changed` scope; plain `git diff HEAD` misses it. |
+| Markdown, bead JSONL, TOML/JSONC, Terraform, `.env.example`, etc. | UBS may not analyze them. Report actual coverage; use manual review and appropriate format validators. A mixed scan does not validate its unsupported files. |
+| Rust source-only scan | `--ubs-arg=--only=rust`; targeted shadow workspaces may omit Cargo phases. Native/Wasm checks and tests remain separate gates. |
+| Cargo manifest/lock/dependency change | Run the required checks/audit from the real workspace (with pinned `cargo-deny` first on PATH where required). If UBS needs workspace context, use an explicit project scan below; never copy a lone manifest into an incomplete shadow crate and call that a graph audit. |
+| Large initial audit / workspace-dependent Rust audit | Explicit `--scope project --ubs-arg=--only=rust` (choose actual languages). Verify ignores and size first. Project scope is not an immutable snapshot; use an isolated checkout for concurrent work. |
+| Hundreds of Rust assertion/expect warnings | Group by rule/path; distinguish test code from production, including inline `#[cfg(test)]` modules in `src/`. See the triage reference. |
 
-### Exit codes
-
-| Code | Meaning |
-|---|---|
-| 0 | Clean -- no critical or warning findings |
-| 1 | Findings present (critical or warning) |
-| 2 | Usage error (bad arguments) |
-
-### Subcommands
-
-| Command | Use for |
-|---|---|
-| `ubs doctor` | Validate module checksums |
-| `ubs doctor --fix` | Redownload corrupted modules |
-| `ubs sessions --entries 1` | View latest install session log |
-| `ubs --update` | Update the UBS binary |
-| `ubs --update-modules` | Force redownload of all modules |
-
----
-
-## Recipes
-
-### Recipe #0 -- Quick pre-commit gate
+Optional, **only when locally supported and consistent with project rules**:
 
 ```bash
-# Stage your changes first
-git add <files>
+# Static Rust analysis only; explicitly NOT cargo/test/dependency verification.
+python3 "$UBS_SKILL/scripts/scan.py" --ubs-arg=--only=rust --ubs-arg=--no-cargo src/lib.rs
 
-# Scan staged files
-ubs --staged --format=sarif --quiet 2>/dev/null \
-  | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-critical=0
-for run in d.get('runs',[]):
-  for r in run.get('results',[]):
-    if r.get('level')=='error':
-      critical+=1
-      loc=r.get('locations',[{}])[0].get('physicalLocation',{})
-      f=loc.get('artifactLocation',{}).get('uri','')
-      ln=loc.get('region',{}).get('startLine','?')
-      print(f\"CRITICAL {r.get('ruleId','?')} {f}:{ln}\")
-print(f'\\n{critical} critical(s)')
-"
-# Exit 0 = safe to commit
+# Supplemental production-focused view; does not replace required scanning of tests.
+python3 "$UBS_SKILL/scripts/scan.py" --ubs-arg=--only=rust --ubs-arg=--exclude-tests src/lib.rs
 ```
 
-### Recipe #1 -- Scan changed files (most common)
+Skipped categories are “not evaluated,” never clean. Do not add these switches
+just to silence a required gate. The language selector is `--only=rust` or
+`--exclude-langs=...`; current `--exclude=...` excludes **paths**, not languages.
+Historical `--category`/`--suggest-ignore` failures are version-specific: consult
+local help rather than memorizing that a flag is permanently broken.
+
+## Triage without changing correct behavior
+
+Read the actual code and the finding's file, line, and rule. Start with changed
+production paths, real secret/data exposure, unguarded parsing, unsafe indexing,
+and lifecycle mistakes. Then inspect tests and helpers. Findings on unchanged
+lines in a scanned file are not automatically regressions from this patch.
+
+- A critical label is a priority to investigate, not proof of a bug.
+- `assert!`/`expect()` in a Rust test may be intentional; a production request-path
+  panic is different. Do not remove assertions, weaken tests, or replace a valid
+  assertion solely to reduce the warning count.
+- Compiled directories, `lib/`, `.tsx`, tests, backend code, and fake-looking
+  credentials are **not automatically safe**. Verify the artifact boundary,
+  fixture provenance, trust boundary, and actual data flow before dismissing.
+- Preserve intentional `x != null` (checks both null and undefined). Do not change
+  semantics to satisfy a heuristic. Similarly, prove synchronous-vs-async APIs
+  before dismissing promise warnings.
+- Prefer documented triage over blanket exclusion. Exclude verified generated or
+  vendored artifacts narrowly; do not exclude all tests, backend source, or TSX.
+- Treat inline `ubs:ignore` and ignore globs as analyzer/version-specific. Verify
+  the exact finding disappears **and a nearby real finding still appears**.
+  If suppression does not work, document the false positive rather than broadening
+  exclusions or repeatedly editing correct code.
+
+See [FALSE-POSITIVES.md](references/FALSE-POSITIVES.md) for examples and boundaries.
+
+## Raw fallback: keep both streams and the real status
+
+Use a shell with normal command-status semantics. This form survives `set -e`:
 
 ```bash
-# What files changed?
-changed=$(git diff --name-only HEAD)
-[ -z "$changed" ] && echo "No changes" && exit 0
-
-# Scan them
-ubs --format=sarif --quiet $changed 2>/dev/null
+report_dir=$(mktemp -d "${TMPDIR:-/tmp}/ubs-run.XXXXXX")
+if ubs --format=sarif --quiet --no-auto-update \
+  --report-json="$report_dir/summary.json" src/file.rs \
+  >"$report_dir/findings.sarif" 2>"$report_dir/stderr.log"; then
+  scan_rc=0
+else
+  scan_rc=$?
+fi
+printf 'UBS exit=%s; artifacts=%s\n' "$scan_rc" "$report_dir"
+# Parse the saved reports afterwards; do not let parser success replace scan_rc.
 ```
 
-### Recipe #2 -- Full project audit with triage
-
-```bash
-# Phase 1: counts only (cheap)
-ubs --format=json --quiet --ci . 2>/dev/null \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['totals'])"
-
-# Phase 2: if criticals > 0, get details via SARIF
-ubs --format=sarif --quiet --ci . 2>/dev/null \
-  | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-for run in d.get('runs',[]):
-  for r in run.get('results',[]):
-    if r.get('level')=='error':
-      loc=r.get('locations',[{}])[0].get('physicalLocation',{})
-      f=loc.get('artifactLocation',{}).get('uri','')
-      ln=loc.get('region',{}).get('startLine','?')
-      rule=r.get('ruleId','?')
-      msg=r.get('message',{}).get('text','')[:80]
-      print(f'{f}:{ln} [{rule}] {msg}')
-"
-```
-
-### Recipe #3 -- Scoped language scan
-
-```bash
-# Only JS/TS (skip Python, Rust, etc.)
-ubs --only=js --format=sarif --quiet src/ 2>/dev/null
-```
-
-### Recipe #4 -- Comparison against baseline
-
-```bash
-# Save baseline
-ubs --format=json --quiet --ci --report-json=/tmp/ubs-baseline.json . 2>/dev/null
-
-# After changes, diff against baseline
-ubs --format=json --quiet --ci --comparison=/tmp/ubs-baseline.json . 2>/dev/null
-```
-
-### Recipe #5 -- Fix-and-verify loop
-
-```bash
-# 1. Scan
-ubs --format=sarif --quiet file.ts 2>/dev/null > /tmp/ubs-findings.json
-
-# 2. Read each finding, fix the code
-
-# 3. Re-scan the same file
-ubs --format=sarif --quiet file.ts 2>/dev/null
-# Exit 0 = all fixed
-```
-
----
-
-## Output Parsing -- SARIF Reference
-
-SARIF (Static Analysis Results Interchange Format) is the only UBS format with full file:line:col locations. Structure:
-
-```json
-{
-  "runs": [{
-    "results": [{
-      "ruleId": "js.eval-call",
-      "level": "error",        // error = critical, warning = warning, note = info
-      "message": { "text": "eval() allows arbitrary code execution" },
-      "locations": [{
-        "physicalLocation": {
-          "artifactLocation": { "uri": "/path/to/file.js" },
-          "region": {
-            "startLine": 42,
-            "startColumn": 11,
-            "endLine": 42,
-            "endColumn": 23
-          }
-        }
-      }]
-    }]
-  }]
-}
-```
-
-SARIF severity mapping:
-- `"error"` = UBS critical (always fix)
-- `"warning"` = UBS warning (production risk, usually fix)
-- `"note"` = UBS info (judgment call)
-
-### One-liner to extract actionable findings
-
-```bash
-ubs --format=sarif --quiet <files> 2>/dev/null | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-for run in d.get('runs',[]):
-  for r in run.get('results',[]):
-    if r.get('level') in ('error','warning'):
-      loc=r.get('locations',[{}])[0].get('physicalLocation',{})
-      f=loc.get('artifactLocation',{}).get('uri','')
-      ln=loc.get('region',{}).get('startLine','?')
-      col=loc.get('region',{}).get('startColumn','?')
-      print(f\"{r['level']:8s} {r.get('ruleId','?'):30s} {f}:{ln}:{col}  {r.get('message',{}).get('text','')[:80]}\")
-"
-```
-
-### JSON format (counts only, no locations)
-
-```json
-{
-  "totals": { "critical": 1, "warning": 0, "info": 0, "files": 1 },
-  "scanners": [{ "findings": [{ "severity": "critical", "count": 1, "title": "..." }] }]
-}
-```
-
-Use JSON only for pass/fail checks. For triage, always use SARIF.
-
----
-
-## False-Positive Triage
-
-UBS produces many false positives on real codebases. The following categories are **known false positives** -- do NOT fix these:
-
-### Always false positive (skip immediately)
-
-| Finding | Why it's false | Example |
-|---|---|---|
-| Loose equality `==` in `functions/lib/` or `dist/` | Compiled JS output (TypeScript `__importStar` helper) | `mod != null` in `__createBinding` |
-| `__proto__` / prototype pollution in test files | Intentional test payloads testing defense | `attack-helpers.ts` |
-| Hardcoded credentials in test fixtures | Fake tokens, test passwords | `test-password-123` in `*.test.ts` |
-| `eval()` in Playwright scripts | `$$eval` / `$eval` are Playwright APIs, not security holes | `page.$$eval('selector', ...)` |
-| TSX JSX props flagged as global assignments | UBS mis-parses JSX attribute syntax | `<Comp value={x} />` |
-| `process.env` in Node.js backend code | `security.env-in-client` rule -- backend code never reaches client | Firebase Functions `process.env.API_KEY` |
-| `console.log` in scripts/tools | Intentional debugging output in non-production code | CLI tools, build scripts |
-
-### Usually false positive (verify before skipping)
-
-| Finding | When it's real | When it's false |
-|---|---|---|
-| Sensitive data logging | Logging actual secrets or PII | Logging token counts, request IDs |
-| Stale closure | Mutable var captured before async boundary | Reactive refs read synchronously before `await` |
-| Missing null check | Accessing property on nullable without guard | Framework-guaranteed non-null (e.g., route params after guard) |
-
-### Triage workflow
-
-1. Read finding: note ruleId, file, line
-2. Check if file is in a known-FP category (compiled output, test fixtures, generated code)
-3. If not obvious FP: read the actual code at that line
-4. Determine: is this a real bug or a pattern UBS doesn't understand?
-5. Real bug -> fix it, re-run UBS
-6. False positive -> suppress via `.ubsignore` (directory) or `// ubs:ignore` (line)
-
----
-
-## .ubsignore
-
-UBS reads `.ubsignore` from the project root (or `--ignore-file=PATH`). Syntax is like `.gitignore`:
-
-```
-# Directories to exclude entirely
-node_modules/
-dist/
-build/
-.next/
-functions/lib/          # compiled JS output -- always FP
-coverage/
-playwright-report/
-test-results/
-
-# File patterns
-*.min.js
-*.bundle.js
-
-# Specific files with known FP patterns
-scripts/research_*.mjs  # Playwright $$eval triggers eval heuristics
-```
-
-### Matching semantics
-
-- Bare directory names (e.g., `functions/lib`) match that path component during traversal
-- Trailing `/` explicitly marks a directory
-- Glob patterns work: `*.tsx`, `scripts/*.mjs`
-- Comments start with `#`
-- Leading `./` is stripped automatically
-
-### When to use .ubsignore vs inline suppression
-
-| Use `.ubsignore` when | Use `// ubs:ignore` when |
-|---|---|
-| Entire directory is noise (compiled output, vendored deps) | Specific line is a known FP but file has real findings |
-| File type produces systematic FPs (`.tsx` with JSX prop FPs) | You want to preserve scanning for other rules in the file |
-| Build artifacts, generated code | Server-only `process.env` in otherwise-scanned backend code |
-
-### Inline suppression
-
-Add `// ubs:ignore` (or `// ubs:ignore <reason>`) on the line with the finding:
-
-```typescript
-const apiKey = process.env.API_KEY  // ubs:ignore server-only env access
-```
-
-Use a consistent comment style across the project. `// ubs:ignore server-only env access` is the convention.
-
----
-
-## Anti-Patterns -- DO NOT do these
-
-### A1. Running `ubs .` on a large project without scoping
-**Symptom:** 1000+ lines of output, 300k+ tokens, context blown.
-**Why:** UBS scans everything. On a real project it finds hundreds of findings, most false positives.
-**Correct:** Scope to changed files: `ubs --staged`, `ubs --diff`, or `ubs <specific-files>`. Only use `ubs .` for initial audits, and always with `--format=sarif --quiet`.
-
-### A2. Using `--format=json` for triage
-**Symptom:** You see counts but no file:line locations. You re-scan with text format to find them.
-**Why:** JSON output has `totals` (counts) and `scanners[].findings[]` (category summaries), but NO per-finding file locations.
-**Correct:** Use `--format=sarif` for triage. Use `--format=json` only for pass/fail checks.
-
-### A3. Parsing text output
-**Symptom:** Trying to grep/parse the default text output for findings.
-**Why:** Text output has ASCII banner art, embedded raw JSON lines from ast-grep, and a summary that can disagree with the actual findings (known counting bug).
-**Correct:** `--format=sarif --quiet` for machine parsing.
-
-### A4. Not staging before `--staged`
-**Symptom:** `ubs --staged` returns "No changed files to scan" with exit 0.
-**Why:** `--staged` scans the git index. If nothing is staged, there's nothing to scan.
-**Correct:** `git add <files>` first, then `ubs --staged`.
-
-### A5. Fixing all findings without triage
-**Symptom:** Spending 30 minutes "fixing" 96 criticals that are all false positives.
-**Why:** UBS flags compiled JS (`functions/lib/`), test fixtures, and framework patterns as critical.
-**Correct:** Triage first. Check file paths. If it's in `lib/`, `dist/`, `node_modules/`, or `*.test.*`, it's almost certainly a false positive. See $$False-Positive Triage.
-
-### A6. Using broken flags
-**Known broken flags:**
-- `--category=<name>` -- returns "Unknown category filter" for most values
-- `--suggest-ignore` -- crashes with `suggest_ignore_candidates: command not found`
-**Correct:** Don't use these. Filter with `--only=<language>` instead of `--category`. Create `.ubsignore` manually instead of `--suggest-ignore`.
-
-### A7. Treating exit 0 as "no issues exist"
-**Symptom:** "UBS passed, ship it."
-**Why:** Exit 0 means no critical or warning findings were detected *in the scanned scope*. If scope was wrong (no staged files, wrong directory, `.ubsignore` too broad), exit 0 is meaningless.
-**Correct:** After a clean scan, verify the scope was correct: check that the right files were scanned.
-
-### A8. Running `ubs` without `--quiet` in agent context
-**Symptom:** 50+ lines of ASCII banner art consuming tokens.
-**Why:** Default text mode prints two large ASCII art banners.
-**Correct:** Always pass `--quiet` or `-q` in agent context.
-
-### A9. Re-running full scans to find a single finding
-**Symptom:** Full `ubs .` scan after fixing one file.
-**Correct:** `ubs --format=sarif --quiet <the-file-you-fixed>` to verify just that file.
-
-### A10. Changing correct code to silence a false positive
-**Symptom:** Agent changes `!= null` to `!== null` to "satisfy the scanner," breaking dual null/undefined checks.
-**Why:** This changes semantics. `!= null` intentionally catches both `null` and `undefined` -- it's a standard JavaScript idiom.
-**Correct:** If a finding is a false positive, suppress it (`// ubs:ignore` or `.ubsignore`). Never change correct code to appease a scanner. The fix should address the *bug*, not the *alert*.
-
-### A11. Web-searching for UBS documentation
-**Symptom:** Agent runs a web search for "UBS ultimate bug scanner" instead of reading this skill.
-**Why:** UBS is on GitHub but the canonical agent docs are this skill file.
-**Correct:** Read this skill. Run `ubs --help` for CLI reference. Run `ubs doctor` for health check.
-
-### A12. Spending 5+ tool calls identifying what UBS is
-**Symptom:** Agent greps AGENTS.md, CLAUDE.md, and runs `which ubs` / `command -v ubs` multiple times before recognizing UBS.
-**Why:** Agents don't know UBS exists until they read docs or this skill activates.
-**Correct:** This skill provides full context. `ubs` is at `~/.local/bin/ubs`. Run `ubs --version` to confirm.
-
----
-
-## Troubleshooting
-
-### "Failed to prepare files workspace"
-UBS copies files to a shadow workspace in /tmp. If you pass absolute paths to files outside the current directory tree, this can fail. **Always `cd` to the project root first**, then use relative paths: `ubs src/file.ts` not `ubs /absolute/path/to/file.ts`.
-
-### "not a git repository; cannot run --staged"
-You're not in a git repo. Use positional file args instead: `ubs file1.ts file2.py`
-
-### "No changed files to scan" with --staged
-Nothing is staged. Run `git add <files>` first.
-
-### "Refusing to scan home directory"
-UBS copies the target to /tmp. Set `UBS_REFUSE_HOME_ROOT=0` or specify a subdirectory.
-
-### Directory size limit exceeded (> 1GB)
-```bash
-UBS_MAX_DIR_SIZE_MB=0 ubs --format=sarif --quiet . 2>/dev/null
-```
-Or use `--skip-size-check`.
-
-### Module checksum mismatch
-```bash
-ubs doctor --fix  # redownloads and re-verifies
-```
-
-### "suggest_ignore_candidates: command not found"
-Known bug in `--suggest-ignore`. Create `.ubsignore` manually instead.
-
-### Output says 0 criticals but you see findings in the text
-Known counting inconsistency between ast-grep's inline JSON output and the summary totals. Trust the SARIF output, which correctly counts all findings.
-
-### UBS takes > 60 seconds on a few files
-Check if type narrowing is running (`--skip-type-narrowing` to disable). Type narrowing helpers download and run Python/JS scripts per-file, which is slow on large files.
-
----
-
-## Provenance
-
-- **A1 (full-repo scan blows context):** CASS sessions 019cc612 (Codex Mar 7), 7f29e7ed, 0477d545, 8d8d4269 (Claude Code). Multiple agents independently hit 300k+ token output.
-- **A2 (JSON lacks file:line):** 019cc612 Codex session. Agent cycled through 5 output formats trying to get structured triage data.
-- **A3 (text output inconsistency):** Verified against live `ubs v5.2.75`. Text embeds ast-grep JSON lines but summary counts disagree.
-- **A4 (--staged without staging):** CASS subagent dd0ae33855762512. Agent ran `--staged` before `git add`, got "No changed files."
-- **A5 (96 false positive criticals):** Sessions 7f29e7ed, 0477d545. Agent spent 20+ minutes triaging all-FP findings in compiled JS and test fixtures.
-- **A6 (broken flags):** 019cc612 Codex session. `--category=security` returned "Unknown category filter." `--suggest-ignore` crashed with exit 127.
-- **A8 (banner art tokens):** All sessions. Every agent learned to add `--quiet` after first run.
-- **False-positive categories:** Compiled from sessions 7f29e7ed, 0477d545, 8d8d4269, 019ce871 (ubsignore session). TSX FPs from `.ubsignore` in /data/projects/philomena.
-- **SARIF as best format:** Codex session 019cc612. Agent independently concluded SARIF was the only format with file+line detail after trying all five.
-- **Inline suppression pattern:** CASS session 019ce871. Agent developed `// ubs:ignore server-only env access` convention for 13 files.
-- **A10 (changing code to appease scanner):** Session 7f29e7ed, subagent c10da2bf50ec200a. Agent changed intentional `!= null` to `!== null` to silence a false positive, breaking dual null/undefined guard semantics.
-- **A12 (5+ tool calls to identify UBS):** Sessions 8d8d4269, 0477d545, 019cc342. Agents ran 3-5 grep/find commands before locating UBS documentation.
-- **Phantom callable detection:** Session 8d8d4269 subagents. Agent invented cross-reference grep for `httpsCallable` vs backend exports. Not a UBS feature but a pattern UBS should catch.
-
----
-
-## References
-
-| File | When to open |
-|---|---|
-| [FALSE-POSITIVES.md](references/FALSE-POSITIVES.md) | Detailed false-positive catalog with examples |
-| [SARIF-PARSING.md](references/SARIF-PARSING.md) | Full SARIF parsing recipes and jq one-liners |
-| [SELF-TEST.md](SELF-TEST.md) | Failure-case tests verifying the skill against live UBS |
+Do not pipe the scanner to `head`, a fallible inline Python program, or a heredoc
+that also consumes stdin: this caused broken pipes and hidden failures in CASS.
+Do not use `|| true`, `2>/dev/null`, or “empty file means no results” for a gate.
+Paths with spaces/newlines need separate argv entries or NUL-safe Git handling;
+avoid `ubs $(git diff ...)`, shell-specific word splitting, and non-NUL `xargs`.
+Reuse saved SARIF for counts and details instead of rescanning to change format.
+
+Long-running tools need a completion result. Quiet output is not success; a
+cancelled or timed-out mandatory scan stays incomplete. UBS can compile/analyze
+code; follow project build isolation/offloading rules and coordinate heavy runs.
+Check version/pins and diagnostics before assuming a scanner finding is a product
+bug (for example an old cargo-deny unable to parse a newer advisory format).
+
+## References and tests
+
+- [SARIF-PARSING.md](references/SARIF-PARSING.md): bounded inspection of saved reports.
+- [SESSION-FINDINGS.md](references/SESSION-FINDINGS.md): CASS scope, concrete evidence,
+  old-skill mistakes, and regression cases. Tool use and skill loading are distinguished.
+- [SELF-TEST.md](SELF-TEST.md): run `bash scripts/test-all.sh --skill ubs` from the shared
+  skill repo; tests retain small artifacts and perform no deletion or tool updates.
