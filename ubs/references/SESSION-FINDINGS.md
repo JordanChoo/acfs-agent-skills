@@ -133,3 +133,52 @@ or shell is involved. This is documented triage, not an automatic test exemption
 Remaining warnings cover intentional test JSON assertions and subprocess timeout
 heuristics (UBS owns its module timeouts; the wrapper waits for actual completion).
 No broad exclusion or semantic workaround was added to make those counts vanish.
+
+## Direct UBS use (second pass, 2026-11-16)
+
+The audit above covers the 17 sessions that opened the skill. Most UBS runs come from project
+AGENTS.md files ("ubs <changed-files> before every commit") and never load the skill. A second
+pass read about 35 runs in Claude Code sessions (rusty-jev, philomena-agent, hugh, scry,
+rusty-manus, rusty-seo) and about 89 runs in 13 Codex sessions not in the inventory
+(philomena, philomena-agent, scry, jordanchoo-static, rusty-seo). There are no Codex sessions
+after 2026-05-23. Claude Code transcripts often store only the tool's description, not the
+command, so some conclusions rest on the output and the agent's words. Paths: `C:` is
+`~/.claude/projects/`, `X:` is `~/.codex/sessions/2026/`; numbers are message indices.
+
+| Pattern | Evidence | Rule in SKILL.md |
+| --- | --- | --- |
+| Default text output flooding the context; reruns to clear warnings | About 40 runs in 4 Codex sessions; X:04/10 019d7540 made 26 runs (about 160k tokens); one Rust file can list 500+ warnings (C:rusty-manus #578) | Runner summary only; rule 3 |
+| Code changed only to quiet UBS: test `panic!` to `assert!`, re-raising try/except, `!= null` rewrites, `ubs:ignore` comments, test-wide `.ubsignore` | 5 Claude sessions (C:rusty-seo 38ca56db #915, #1015; C:rusty-jev 06c74ad3 #3786-3806, where warnings rose 148 to 152) and 9 Codex cases (X:04/10 019d7540 2717, 2899; X:04/28 019dd529 2026; X:03/13 019ce871 309, 119, 526; the comments then spread into new files, 019ce891 1432) | Rule 1 |
+| Exit 0 with hundreds of warnings, then commit | C:rusty-jev 06c74ad3 #3573 (409 warnings); C:hugh 5af828ad #1592; C:philomena 9d9f4ee7 #11892 | `--baseline`, report requirements |
+| Hand-made before/after comparisons, some by counts only | C:philomena 9d9f4ee7 #6563-6579 (7+ calls, 2 dcg blocks), #8130 ("same 20 criticals" from equal counts); C:rusty-manus bbafa3dc #361, #579 | Runner `--baseline` |
+| Scope narrowed until exit 0, findings misattributed | C:philomena 9d9f4ee7 #3921-3930 (5 of 13 "test dummy" criticals were in `src/`) | Rule 2 |
+| Exit 1 waved through at bead close | X:05/23 019e5277 560, 577 | Rule 4 |
+| Unsupported-only scans reported as passing | X:05/16 019e2f19 1246, X:05/19 019e41e3 220, X:05/20 019e4279 734 ("no recognizable languages", exit 0); X:03/06 019cc342 2776; X:04/06 019d62b7 617 ("Files scanned: 1" of 9); C:scry 6407ffd3 #691 (exit 3 not reported) | Rule 5 |
+| Skipped check reported clean | C:rusty-jev 06c74ad3 #604 (cargo-deny licenses skipped, called clean) | Rule 6, `not_evaluated` |
+| Grepping text output | C:rusty-manus #357 (per-language "Critical issues: 0" before combined "Critical: 9"); C:philomena #3929, #6236 | Rule 7 |
+| `Cargo.toml` or fixtures in the scan list | X:05/23 019e5277 560; X:04/06 019d62b7 617 | Rule 8 |
+| Whole-repo scans, size-limit bypass, a moving `--diff` scope | X:03/07 019cc889 (101 critical, 1337 warnings from compiled `functions/lib`); X:03/12 019ce208 794 and X:03/13 019ce871 81 (`UBS_MAX_DIR_SIZE_MB=0` on a 1.5 GB tree); X:03/07 019cc612 5663 (49, 51, 53 files) | Rule 9 |
+| Version-specific output gaps (5.0.7: empty SARIF, broken `--suggest-ignore`) | X:03/07 019cc881 2951, 019ce871 220 | Rule 10 |
+| Exit codes of chained checks mislabeled | C:philomena #10830 | Raw fallback note |
+
+Good practices promoted: printing `ubs rc=$?` beside the counts (C:rusty-jev, many runs);
+scanning a fresh worktree of the commit (C:philomena wt-jzgj, X:philomena-agent 4286, which
+linked `node_modules`); saving reports to files before reading them. Real bugs UBS found were
+JS/TS/Python data-flow and parsing issues (X:03/12 019ce208 1053: global `isNaN`, unguarded
+`JSON.parse` of a downloaded payload, user-supplied regex ReDoS, an XHR listener leak, a
+divide-by-zero; X:04/28 019dd529 2010).
+
+### Live checks behind the changes (UBS 5.5.26, rusty-jev)
+
+- A file-only Rust scan of `src/tools/verify.rs` reported four "Not evaluated" notes: `cargo
+  check` and test build, fmt and clippy, dependency hygiene (`cargo audit/deny`), and "No
+  Cargo.toml at project root". The runner now surfaces them as `not_evaluated`.
+- The same scan had 150 warnings: 2 in production code and 148 in `#[cfg(test)]` code
+  (`rust_split`).
+- `--baseline cdd435e~1` against that file reported 17 new warnings, all in test code added by
+  that change, and 3 fixed, despite about 50 lines of shift. UBS's native
+  `--save-baseline` / `--new-only` on the same pair reported 16: it treats an identical
+  snippet already present as old, where the runner counts the extra copy as new.
+- The previous raw fallback (redirects into a `$(mktemp)` path) is denied by the dcg hook
+  (`core.filesystem:redirect-truncate-dynamic-path`); the replacement with `--also` and a
+  literal directory is allowed, checked with `dcg hook --batch`.

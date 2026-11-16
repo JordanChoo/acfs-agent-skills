@@ -98,10 +98,125 @@ def load(path):
         return None
 
 
+def location(finding):
+    try:
+        loc = finding["locations"][0]["physicalLocation"]
+        return loc["artifactLocation"]["uri"], loc.get("region", {}).get("startLine")
+    except (KeyError, IndexError, TypeError):
+        return None, None
+
+
+def message(finding):
+    msg = finding.get("message")
+    return (msg.get("text") if isinstance(msg, dict) else None) or ""
+
+
+def finding_key(finding):
+    """Line-independent identity: rule, file and the message (which quotes the code)."""
+    uri, _ = location(finding)
+    return finding.get("ruleId", "unknown"), (uri or "").removeprefix("./"), " ".join(message(finding).split())
+
+
+def not_evaluated(findings):
+    """Phases UBS reports it skipped (for example Cargo phases in a file-only shadow workspace)."""
+    gaps = []
+    for finding in findings:
+        text = message(finding)
+        if text.startswith("Not evaluated") or "No Cargo.toml" in text:
+            gaps.append(f"{finding.get('ruleId', 'unknown')}: {text}")
+    return sorted(set(gaps))
+
+
+def rust_test_lines(path):
+    """Approximate line numbers inside `#[cfg(test)]` items of a Rust file (brace matching that
+    ignores strings and comments: a triage aid, never a reason to skip a finding)."""
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return set()
+    inside, i = set(), 0
+    while i < len(lines):
+        if lines[i].strip().startswith("#[cfg(test)]"):
+            depth, opened, j = 0, False, i
+            while j < len(lines):
+                depth += lines[j].count("{") - lines[j].count("}")
+                opened = opened or "{" in lines[j]
+                inside.add(j + 1)
+                if opened and depth <= 0:
+                    break
+                j += 1
+            i = j
+        i += 1
+    return inside
+
+
+def rust_split(root, findings):
+    """Count findings in Rust production code versus test code (`tests/`, `#[cfg(test)]`)."""
+    split = {"production": collections.Counter(), "test": collections.Counter()}
+    cache = {}
+    for finding in findings:
+        uri, line = location(finding)
+        if not uri or not uri.endswith(".rs"):
+            continue
+        uri = uri.removeprefix("./")
+        if uri not in cache:
+            cache[uri] = rust_test_lines(root / uri)
+        is_test = uri.startswith("tests/") or "/tests/" in uri or (line in cache[uri])
+        split["test" if is_test else "production"][finding.get("level", "unknown")] += 1
+    if not any(split.values()):
+        return None
+    return {k: dict(v) for k, v in split.items()}
+
+
+def baseline_scan(root, ref, targets, ubs_args, artifact, env):
+    """Scan the same files as they were at `ref`, from a scratch copy of git's blobs, and return
+    (status, findings). Files that did not exist at `ref` are simply absent from the baseline."""
+    tree = artifact / "baseline-tree"
+    present = []
+    for target in targets:
+        name = target[2:] if target.startswith("./") else target
+        try:
+            blob = git(root, "show", f"{ref}:{name}")
+        except subprocess.CalledProcessError:
+            continue
+        dest = tree / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(blob)
+        present.append("./" + name)
+    if not present:
+        return "no_files_at_ref", []
+    command = ["ubs", "--format=sarif", "--quiet", "--no-auto-update",
+               "--report-json=" + str(artifact / "baseline-summary.json"), *ubs_args, *present]
+    with (artifact / "baseline.sarif").open("w") as out, (artifact / "baseline-stderr.log").open("w") as err:
+        completed = subprocess.run(command, cwd=tree, env=env, stdout=out, stderr=err)
+    sarif = load(artifact / "baseline.sarif")
+    status, _ = evaluate(completed.returncode, sarif, load(artifact / "baseline-summary.json"))
+    if status in ("incomplete", "coverage_unverified", "not_scanned"):
+        return "baseline_" + status, []
+    return "ok", results(sarif) or []
+
+
+def diff_findings(current, baseline):
+    """Findings present now but not at the baseline, and the reverse, matched as multisets."""
+    base = collections.Counter(finding_key(f) for f in baseline)
+    now = collections.Counter(finding_key(f) for f in current)
+    remaining, new = base.copy(), []
+    for finding in current:
+        key = finding_key(finding)
+        if remaining[key] > 0:
+            remaining[key] -= 1
+        else:
+            new.append(finding)
+    fixed = sum((base - now).values())
+    return new, fixed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scope", choices=("changed", "staged", "project"), default="changed")
     parser.add_argument("--ubs-arg", action="append", default=[], help="e.g. --ubs-arg=--only=rust")
+    parser.add_argument("--baseline", metavar="REF",
+                        help="also scan the same files as they were at REF (e.g. HEAD) and report new findings")
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args()
     cwd = Path.cwd()
@@ -111,7 +226,8 @@ def main():
     except subprocess.CalledProcessError:
         root = cwd
     artifact = Path(tempfile.mkdtemp(prefix="ubs-skill-"))
-    record = {"artifact_dir": str(artifact), "root": str(root), "scope": args.scope,
+    scope_label = "files" if args.paths else args.scope
+    record = {"artifact_dir": str(artifact), "root": str(root), "scope": scope_label,
               "scanner_exit": None, "status": "incomplete"}
     result = 2
     try:
@@ -147,6 +263,33 @@ def main():
             record["sarif_counts"] = dict(collections.Counter(r.get("level", "unknown") for r in findings))
             record["totals"] = summary.get("totals") if isinstance(summary, dict) else None
             record["by_rule"] = dict(collections.Counter(r.get("ruleId", "unknown") for r in findings))
+            record["not_evaluated"] = not_evaluated(findings)
+            record["rust_split"] = rust_split(root, findings)
+            if args.baseline and args.scope == "project":
+                record["baseline"] = {"ref": args.baseline, "status": "unsupported_for_project_scope"}
+            elif args.baseline:
+                base_status, base_findings = baseline_scan(root, args.baseline, targets, args.ubs_arg, artifact, env)
+                entry = {"ref": args.baseline, "status": base_status}
+                if base_status in ("ok", "no_files_at_ref"):
+                    new, fixed = diff_findings(findings, base_findings)
+                    entry["new_count_by_level"] = dict(collections.Counter(r.get("level", "unknown") for r in new))
+                    entry["fixed_count"] = fixed
+                    test_lines = {}
+
+                    def area(finding):
+                        uri, line = location(finding)
+                        if not uri or not uri.endswith(".rs"):
+                            return None
+                        uri = uri.removeprefix("./")
+                        if uri not in test_lines:
+                            test_lines[uri] = rust_test_lines(root / uri)
+                        in_test = uri.startswith("tests/") or "/tests/" in uri or line in test_lines[uri]
+                        return "test" if in_test else "production"
+
+                    entry["new"] = [{"level": r.get("level"), "rule": r.get("ruleId"),
+                                     "file": location(r)[0], "line": location(r)[1], "area": area(r),
+                                     "message": message(r)[:200]} for r in new]
+                record["baseline"] = entry
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         record["error"] = str(error)
         record["status"], result = "incomplete", 2
@@ -156,6 +299,12 @@ def main():
     display["files_requested"] = len(record.get("targets", []))
     display["manual_review_candidates"] = record.get("manual_review_candidates", [])[:20]
     display["top_rules"] = sorted(record.get("by_rule", {}).items(), key=lambda x: x[1], reverse=True)[:20]
+    display["not_evaluated"] = record.get("not_evaluated", [])
+    display["rust_split"] = record.get("rust_split")
+    if "baseline" in record:
+        base = dict(record["baseline"])
+        base["new"] = base.get("new", [])[:30]
+        display["baseline"] = base
     print(json.dumps(display, indent=2))
     return result
 

@@ -2,10 +2,12 @@
 name: ubs
 description: >-
   Run and interpret Ultimate Bug Scanner (UBS) for a bug/security scan or a
-  repository-required pre-commit gate. Use when the user names UBS or asks to
-  triage scanner findings, scan changed files, or configure .ubsignore. Handles
-  exact scope, real exit codes, incomplete coverage, Rust scan limits, and false
-  positives without weakening correct code or tests.
+  repository-required pre-commit gate. Use when the user names UBS, when AGENTS.md
+  says to run `ubs <changed-files>` before committing, or when asked to triage
+  scanner findings, scan changed files, or configure .ubsignore. Handles exact
+  scope, real exit codes, findings new since a baseline, incomplete coverage
+  (unsupported files, skipped Cargo phases), Rust test-vs-production noise, and
+  false positives without weakening correct code or tests.
 ---
 
 # UBS: capture once, verify coverage, then triage
@@ -24,6 +26,10 @@ AGENTS.md/CLAUDE.md first; its toolchain pins and build-location rules take prec
    (the shared installation is `~/.codex/skills/ubs` or `~/.claude/skills/ubs`).
 
 ```bash
+# The usual gate: your changed source files, plus what is NEW compared with HEAD.
+# Run it with the project's PATH (pinned tools such as cargo-deny first, per AGENTS.md).
+python3 "$UBS_SKILL/scripts/scan.py" --baseline HEAD src/worker.rs src/lib.rs
+
 # Specific files: safest scope in a shared working tree; filenames are separate arguments.
 python3 "$UBS_SKILL/scripts/scan.py" src/worker.rs 'tests/file with spaces.rs'
 
@@ -40,8 +46,21 @@ python3 "$UBS_SKILL/scripts/scan.py" --scope staged
    `summary.json`, and `findings.sarif` there as needed. It preserves the scanner's
    real exit code, selected filenames, hashes for file scopes, and analysis options.
    It never stages, commits, invokes install/update/repair commands, or deletes files.
+   Never let raw text output into your context: one Rust file can produce 500 warnings
+   and a session lost 160k tokens that way.
 4. Check **coverage and findings separately** using the table below. Review warnings
-   even when UBS exits zero. Inspect changed unsupported files manually.
+   even when UBS exits zero. Inspect changed unsupported files manually. The summary
+   gives you three triage aids:
+   - `baseline.new`: findings that are new since the baseline ref, matched by rule, file
+     and quoted code (not by line or count), each tagged `production` or `test` for Rust.
+     Triage these first; `fixed_count` says how many disappeared.
+   - `not_evaluated`: phases UBS skipped. File-only Rust scans skip `cargo check`,
+     clippy and `cargo audit/deny`; those checks have **not run**, whatever a project's
+     AGENTS.md says UBS does. Run them separately when they are required.
+   - `rust_split`: warnings in production code versus `tests/` and `#[cfg(test)]`
+     modules (an approximate triage aid; it never makes a test finding ignorable).
+   UBS also has native `--save-baseline=FILE` / `--baseline=FILE --new-only`, which
+   needs a scan of the old file versions; the runner's `--baseline` does that for you.
 5. Fix confirmed bugs; rerun the same scope after changes. Keep the raw artifacts
    and record the final revision/scope, exit code, coverage limits, and triage.
    If source changed during the scan, the runner refuses that result.
@@ -126,22 +145,82 @@ lines in a scanned file are not automatically regressions from this patch.
 
 See [FALSE-POSITIVES.md](references/FALSE-POSITIVES.md) for examples and boundaries.
 
+## Rules from past runs (each was broken repeatedly)
+
+Evidence: [SESSION-FINDINGS.md](references/SESSION-FINDINGS.md), sections "Direct UBS
+use".
+
+1. **Never change correct code only to quiet the scanner.** That includes rewriting a
+   test `panic!`/`expect` into `assert!` "because UBS doesn't flag that", wrapping code in
+   a try/catch that only re-raises, expanding `!= null`, and adding `ubs:ignore` comments
+   or test-wide `.ubsignore` entries. "Same false positive as prior beads" is not
+   triage: list each finding. One agent's rewrites raised the warning count.
+2. **Never shrink the scope until UBS exits 0.** Explain every critical from the first
+   run, file by file. In one case five "test dummy credential" criticals were in `src/`.
+3. **Never loop scans to reach zero warnings.** Fix real issues, rerun once, and report
+   what remains with its triage.
+4. **Exit 1 or criticals at bead close need a written triage per finding**, not a
+   summary line such as "generic test notes, no blocker".
+5. **"Not scanned" has several spellings:** exit 3, "no recognizable languages",
+   "nothing was checked", or "Files scanned" lower than the files you selected. Report
+   it as not scanned. "Ran ubs successfully" for a docs- or JSONL-only change is wrong.
+6. **Any skipped or "Not evaluated" check did not run** (for example "cargo-deny ...
+   skipped", or the Cargo phases of a file-only Rust scan). Never report it as clean.
+7. **Never grep the text output.** Multi-language runs print a per-language summary
+   (`Critical issues: 0`) before the combined one (`Critical: 9`), and counts appear
+   twice. Use the runner or saved SARIF/JSON.
+8. **Keep the scan list to source files.** Leave out `Cargo.toml`, lock files and JSON
+   fixtures; review those by other means.
+9. **No whole-repo scans in a shared tree** unless the project requires one. Never
+   bypass "Directory too large" with `UBS_MAX_DIR_SIZE_MB=0` (UBS copies the tree to
+   temp storage); exclude generated directories narrowly instead. For an exact,
+   stable snapshot, scan from a fresh worktree of your commit (link `node_modules` in
+   if the JS scanner needs it, never commit it) and map paths back to the repo.
+10. **Record `ubs --version`** with the result. Behaviour changed between 5.0.7, 5.2.76
+    and 5.5.26 (for example 5.0.7 wrote empty SARIF and had a broken
+    `--suggest-ignore`). If SARIF is empty or does not match the summary totals, the
+    result is unverified; do not substitute hand-made `rg` sweeps.
+
+**How far to triage.**
+- Every **critical** in files you changed gets its own verdict, new or not.
+- Every finding in `baseline.new` gets a verdict. Warnings of one rule in one area
+  (for example 40 `assert!` in `#[cfg(test)]` code) may share one verdict that names the
+  rule, the area and the count; list any exception separately.
+- Pre-existing warnings outside `baseline.new` need no verdict: report their total.
+- Criticals in files you did not change (another agent's work swept into a wider scan)
+  are not yours to fix: report them to that file's owner or reservation holder.
+- **Baseline ref:** `HEAD` while your change is uncommitted; once committed, the commit
+  before it (`HEAD~1` for one commit, or `git merge-base HEAD origin/main` for a branch).
+
+**What a report must say:** the scope and files, `ubs --version`, the scanner exit
+code, coverage gaps (`not_evaluated`, unsupported files), the new findings against the
+baseline with their verdicts, and anything left untriaged, named as such. An unverified
+or incomplete result goes to the owner as exactly that; do not upgrade UBS or change
+project policy to turn it green without their approval.
+
 ## Raw fallback: keep both streams and the real status
 
-Use a shell with normal command-status semantics. This form survives `set -e`:
+Use a shell with normal command-status semantics. Let UBS write its own report files
+(`--also`, `--report-json`) to a **literal** fresh directory: redirects into a
+`$(mktemp)` or variable path are denied by the dcg hook on this VPS (the previous
+version of this recipe was). This form survives `set -e`:
 
 ```bash
-report_dir=$(mktemp -d "${TMPDIR:-/tmp}/ubs-run.XXXXXX")
-if ubs --format=sarif --quiet --no-auto-update \
-  --report-json="$report_dir/summary.json" src/file.rs \
-  >"$report_dir/findings.sarif" 2>"$report_dir/stderr.log"; then
-  scan_rc=0
+mkdir -p /data/tmp/ubs-run-20261116a   # new literal dir per run (or under your session scratchpad)
+if ubs --format=json --quiet --no-auto-update \
+  --also=sarif:/data/tmp/ubs-run-20261116a/findings.sarif \
+  --report-json=/data/tmp/ubs-run-20261116a/summary.json \
+  src/file.rs >/dev/null 2>/data/tmp/ubs-run-20261116a/stderr.log; then
+  ubs_rc=0
 else
-  scan_rc=$?
+  ubs_rc=$?
 fi
-printf 'UBS exit=%s; artifacts=%s\n' "$scan_rc" "$report_dir"
-# Parse the saved reports afterwards; do not let parser success replace scan_rc.
+echo "ubs exit=$ubs_rc"
+# Parse the saved reports afterwards; do not let parser success replace ubs_rc.
 ```
+
+When one command runs several checks, label each status where it is captured
+(`ubs_rc=$?` right after `ubs`); a later `echo "exit: $?"` reports the wrong command.
 
 Do not pipe the scanner to `head`, a fallible inline Python program, or a heredoc
 that also consumes stdin: this caused broken pipes and hidden failures in CASS.

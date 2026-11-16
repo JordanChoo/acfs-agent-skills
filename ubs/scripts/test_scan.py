@@ -59,6 +59,51 @@ class Classification(unittest.TestCase):
         sarif["runs"][0]["results"] = [{"level": "error", "ruleId": "canary"}]
         self.assertEqual(scan.evaluate(0, sarif, SUMMARY), ("findings", 1))
 
+    @staticmethod
+    def finding(rule, uri, line, text, level="warning"):
+        return {"ruleId": rule, "level": level, "message": {"text": text},
+                "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri},
+                                                    "region": {"startLine": line}}}]}
+
+    def test_baseline_diff_ignores_line_shifts_and_counts_duplicates(self):
+        # CASS: agents compared before/after by equal counts ("same 20 criticals"), which hides a
+        # fixed finding plus a new one. Matching is by rule, file and quoted code, not line or count.
+        f = self.finding
+        base = [f("r.a", "src/x.rs", 10, "x.unwrap()"), f("r.b", "src/x.rs", 20, "y.expect(\"e\")")]
+        now = [f("r.a", "./src/x.rs", 60, "x.unwrap()"), f("r.c", "src/x.rs", 70, "z[i]"),
+               f("r.a", "src/x.rs", 80, "x.unwrap()")]
+        new, fixed = scan.diff_findings(now, base)
+        self.assertEqual([(n["ruleId"], n["locations"][0]["physicalLocation"]["region"]["startLine"])
+                          for n in new], [("r.c", 70), ("r.a", 80)])
+        self.assertEqual(fixed, 1)
+
+    def test_skipped_phases_are_reported_as_not_evaluated(self):
+        # CASS: a skipped cargo-deny check was reported as clean. File-only Rust scans skip Cargo phases.
+        f = self.finding
+        gaps = scan.not_evaluated([
+            f("rust.build.phase", "", 1, "Not evaluated: compilation (cargo check)", "note"),
+            f("rust.dependencies.phase", "", 1, "No Cargo.toml at project root", "note"),
+            f("rust.panic.assert-macros", "src/x.rs", 3, "assert!(x)")])
+        self.assertEqual(len(gaps), 2)
+        self.assertTrue(all("phase" in g for g in gaps))
+
+    def test_rust_split_separates_cfg_test_modules_and_tests_dir(self):
+        # CASS: hundreds of test-only warnings led agents to rewrite test assertions.
+        root = Path(tempfile.mkdtemp(prefix="split-", dir=WORK))
+        (root / "src").mkdir()
+        (root / "src" / "lib.rs").write_text(
+            "pub fn f(v: &[u8]) -> u8 { v[0] }\n"          # line 1: production
+            "#[cfg(test)]\n"                               # 2
+            "mod tests {\n"                                # 3
+            "    #[test] fn t() { assert!(super::f(&[1]) == 1); }\n"  # 4: test
+            "}\n"                                          # 5
+            "pub fn g() {}\n")                             # 6: production again
+        f = self.finding
+        split = scan.rust_split(root, [f("idx", "src/lib.rs", 1, "v[0]"), f("assert", "src/lib.rs", 4, "assert!"),
+                                       f("unwrap", "tests/it.rs", 9, "x.unwrap()"),
+                                       f("other", "src/lib.rs", 6, "g", "note")])
+        self.assertEqual(split, {"production": {"warning": 1, "note": 1}, "test": {"warning": 2}})
+
     def test_old_shell_counter_does_not_test_successfully_under_errexit(self):
         old = subprocess.run(["bash", "-c", "set -e; PASS=0; ok(){ ((PASS++)); echo PASS; }; ok"], capture_output=True)
         new = subprocess.run(["bash", "-c", "set -e; PASS=0; ok(){ PASS=$((PASS+1)); echo PASS; }; ok"], capture_output=True)
@@ -155,6 +200,47 @@ sys.exit(p['rc'])
         self.assertEqual(run.returncode, 0)
         self.assertEqual(record["status"], "review_required")
         self.assertEqual(record["manual_review_candidates"], ["./notes.md"])
+
+    def test_explicit_files_are_recorded_as_files_scope(self):
+        (self.root / "source.js").write_text("const x = 1;\n")
+        _, record = self.run_scan("source.js")
+        self.assertEqual(record["scope"], "files")
+
+    def test_baseline_reports_new_and_fixed_findings(self):
+        warn = {"ruleId": "js.eval", "level": "warning", "message": {"text": "eval(data)"},
+                "locations": [{"physicalLocation": {"artifactLocation": {"uri": "old.js"},
+                                                    "region": {"startLine": 1}}}]}
+        (self.root / "old.js").write_text("eval(data);\n")
+        self.commit()
+        (self.root / "old.js").write_text("// moved down\neval(data);\n")
+        (self.root / "new.js").write_text("eval(data);\n")
+        sarif = {"version": "2.1.0", "runs": [{"results": [warn]}]}
+        self.payload.write_text(json.dumps({"rc": 0, "sarif": sarif, "summary": SUMMARY}))
+        run, record = self.run_scan("--baseline", "HEAD", "old.js", "new.js")
+        base = record["baseline"]
+        self.assertEqual(base["status"], "ok")
+        # Same finding in both runs (the fake scanner reports it identically): nothing new, nothing fixed.
+        self.assertEqual((base["new_count_by_level"], base["fixed_count"]), ({}, 0))
+        self.assertTrue((Path(record["artifact_dir"]) / "baseline-tree" / "old.js").exists())
+        self.assertFalse((Path(record["artifact_dir"]) / "baseline-tree" / "new.js").exists())
+        self.assertEqual(run.returncode, 0)
+
+    def test_baseline_with_no_files_at_ref_marks_everything_new(self):
+        (self.root / "seed.txt").write_text("x\n")
+        self.commit()
+        (self.root / "fresh.js").write_text("eval(data);\n")
+        warn = {"ruleId": "js.eval", "level": "warning", "message": {"text": "eval(data)"}}
+        self.payload.write_text(json.dumps({"rc": 0, "sarif": {"version": "2.1.0", "runs": [{"results": [warn]}]},
+                                            "summary": SUMMARY}))
+        _, record = self.run_scan("--baseline", "HEAD", "fresh.js")
+        self.assertEqual(record["baseline"]["status"], "no_files_at_ref")
+        self.assertEqual(record["baseline"]["new_count_by_level"], {"warning": 1})
+
+    def test_baseline_is_refused_for_project_scope(self):
+        (self.root / "source.js").write_text("const x = 1;\n")
+        self.commit()
+        _, record = self.run_scan("--scope", "project", "--baseline", "HEAD")
+        self.assertEqual(record["baseline"]["status"], "unsupported_for_project_scope")
 
     def test_changing_source_invalidates_scan(self):
         (self.root / "source.js").write_text("const x = 1;\n")
