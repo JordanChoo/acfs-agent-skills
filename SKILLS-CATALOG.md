@@ -6,6 +6,7 @@ Available skills installed at `~/.<harness>/skills/`. Consult this catalog when 
 
 | Skill | When to use |
 |-------|-------------|
+| **gcloud** | Before any `gcloud`/`bq`/`firebase` command, deploying ("push main, prove it's live"), watching Cloud Build, Cloud Run/Functions, logs, Secret Manager, Tasks, Scheduler, BigQuery, emulators on the shared VPS: identity flags on every call (shared global config), reads vs owner-approved writes, `scripts/watch_deploy.py`, PERMISSION_DENIED / reauth / missing-region errors |
 | **cloud-build** | Google Cloud Build CI/CD (cloudbuild.yaml, triggers, substitutions, secret manager, multi-stage pipelines wired to AR/Run/GKE/Firebase) |
 | **firebase-basics** | Bootstrap + product reference for any Firebase project (CLI login, `firebase use`, MCP wiring, core concepts, IAM, IaC, SDKs) — load first; firebase-stack/emulator-harness build on top |
 | **firebase-stack** | Firebase + GCP projects (Firestore, Functions, Hosting, Auth, rules, emulators, secrets) |

@@ -16,6 +16,11 @@ description: >-
 
 Discipline for working with Google Cloud Build CI/CD. The goal is to prevent the recurring traps: misordered `waitFor` DAGs, the user-service-account logging trap, secret references that silently expand to empty, triggers that don't fire because of branch/region mismatch, and pipelines that exceed the default 60-min timeout.
 
+**This skill is for writing and fixing `cloudbuild.yaml` and triggers.** To deploy, watch a build,
+prove a commit is live, or read logs on this VPS, use the `gcloud` skill: deploys happen by
+pushing `main` (the owner's rule), and `gcloud builds submit .` uploads the shared working tree,
+other agents' uncommitted edits included, so do not run it without the owner's approval.
+
 ## Triggers
 
 Load this skill when ANY of:

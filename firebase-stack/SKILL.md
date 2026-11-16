@@ -48,6 +48,12 @@ cloudbilling, cloudtasks, secretmanager, firebaseextensions, cloudfunctions, clo
 
 ### Deploying
 
+**On this VPS, production deploys go through git: push `main`, and the Cloud Build trigger
+deploys.** The owner has ruled this repeatedly ("Always push to remote main since that is what
+triggers the deploy"). Run `firebase deploy` by hand only when the owner approves that named
+one-off in the current session; then watch and verify with the `gcloud` skill. The steps below
+are what that pipeline (or an approved one-off) must do.
+
 1. Identify the deploy target: `hosting`, `functions`, `firestore:rules`, `firestore:indexes`, `storage` — never bare `firebase deploy` unless the user explicitly said "all".
 2. Pre-flight gates, in order:
    - `scripts/verify-env.sh` (or `--strict` in CI) — env/secret divergence is the #1 cause of broken deploys
